@@ -1,0 +1,1 @@
+# sqlserver-mcp-rs
