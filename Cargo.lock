@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "sql-server-2025-master-msdb-sandbox-combined-catalog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
