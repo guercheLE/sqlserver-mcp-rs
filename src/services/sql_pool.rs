@@ -21,7 +21,11 @@ pub type SqlPool = Pool<ConnectionManager>;
 /// `config` here, since two `Config`s that are meaningfully different for
 /// pooling purposes (e.g. different resolved AAD tokens) don't necessarily
 /// differ in a way that's cheap to hash/compare.
-pub async fn cached_pool(cache_key: &str, config: tiberius::Config, max_size: u32) -> anyhow::Result<SqlPool> {
+pub async fn cached_pool(
+    cache_key: &str,
+    config: tiberius::Config,
+    max_size: u32,
+) -> anyhow::Result<SqlPool> {
     static POOLS: OnceLock<Mutex<HashMap<String, SqlPool>>> = OnceLock::new();
     let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
 

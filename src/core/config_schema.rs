@@ -120,10 +120,10 @@ impl Config {
     /// Splits `url` into `(host, port)`, using `sql_port` (default 1433,
     /// TDS's standard port) when `url` carries no explicit `:port` suffix.
     pub fn host_and_port(&self) -> (&str, u16) {
-        if let Some((host, port)) = self.url.rsplit_once(':') {
-            if let Ok(port) = port.parse() {
-                return (host, port);
-            }
+        if let Some((host, port)) = self.url.rsplit_once(':')
+            && let Ok(port) = port.parse()
+        {
+            return (host, port);
         }
         (self.url.as_str(), self.sql_port)
     }

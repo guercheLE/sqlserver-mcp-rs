@@ -37,7 +37,11 @@ fn parse_path(path: &str) -> anyhow::Result<(&str, &str, &str)> {
         (Some(db), Some(schema), Some(name))
             if !db.is_empty() && !schema.is_empty() && !name.is_empty() =>
         {
-            Ok((validate_ident(db)?, validate_ident(schema)?, validate_ident(name)?))
+            Ok((
+                validate_ident(db)?,
+                validate_ident(schema)?,
+                validate_ident(name)?,
+            ))
         }
         _ => anyhow::bail!(
             "endpoint path '{path}' is not in the expected /<db>/<schema>/<name> shape"
@@ -60,7 +64,11 @@ fn parse_path(path: &str) -> anyhow::Result<(&str, &str, &str)> {
 /// provides for every argument *value*. Failing loudly here on an
 /// unexpected character is preferable to silently trusting it.
 fn validate_ident(ident: &str) -> anyhow::Result<&str> {
-    if !ident.is_empty() && ident.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+    if !ident.is_empty()
+        && ident
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
         Ok(ident)
     } else {
         anyhow::bail!("identifier '{ident}' contains characters outside [A-Za-z0-9_]")
@@ -95,7 +103,10 @@ fn ordered_params(input_schema: &Value) -> Vec<Param> {
         .flatten()
         .map(|(name, schema)| Param {
             name: name.clone(),
-            ordinal: schema.get("x-sql-ordinal").and_then(Value::as_u64).unwrap_or(0),
+            ordinal: schema
+                .get("x-sql-ordinal")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             x_sql_type: schema
                 .get("x-sql-type")
                 .and_then(Value::as_str)
@@ -117,7 +128,12 @@ fn build_statement(
     params: &[Param],
     body: &Map<String, Value>,
 ) -> anyhow::Result<(String, Vec<Box<dyn ToSql>>)> {
-    let qualified = format!("{}.{}.{}", quote_ident(db), quote_ident(schema), quote_ident(name));
+    let qualified = format!(
+        "{}.{}.{}",
+        quote_ident(db),
+        quote_ident(schema),
+        quote_ident(name)
+    );
 
     let mut bound: Vec<Box<dyn ToSql>> = Vec::with_capacity(params.len());
     for param in params {
@@ -146,7 +162,11 @@ fn build_statement(
             } else {
                 let mut assignments = Vec::with_capacity(params.len());
                 for (i, p) in params.iter().enumerate() {
-                    assignments.push(format!("{} = @P{}", quote_ident(validate_ident(&p.name)?), i + 1));
+                    assignments.push(format!(
+                        "{} = @P{}",
+                        quote_ident(validate_ident(&p.name)?),
+                        i + 1
+                    ));
                 }
                 format!("EXEC {qualified} {}", assignments.join(", "))
             }
@@ -216,13 +236,15 @@ impl ApiClient {
         let (db, schema, name) = parse_path(&endpoint.path)?;
 
         let (input_schema, _output_schema) =
-            resolved_schemas_for(&self.config.api_version, &endpoint.operation_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no resolved schema found for operation '{}' under api_version '{}'",
-                    endpoint.operation_id,
-                    self.config.api_version
-                )
-            })?;
+            resolved_schemas_for(&self.config.api_version, &endpoint.operation_id).ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "no resolved schema found for operation '{}' under api_version '{}'",
+                        endpoint.operation_id,
+                        self.config.api_version
+                    )
+                },
+            )?;
         let params = ordered_params(input_schema);
 
         let empty = Map::new();
@@ -233,7 +255,14 @@ impl ApiClient {
             .cloned()
             .unwrap_or_default();
 
-        let (sql, bound) = build_statement(db, schema, name, endpoint.description.as_deref(), &params, &body)?;
+        let (sql, bound) = build_statement(
+            db,
+            schema,
+            name,
+            endpoint.description.as_deref(),
+            &params,
+            &body,
+        )?;
 
         let auth_method = auth_manager.resolve_tds_auth().await?;
 
@@ -254,18 +283,21 @@ impl ApiClient {
         }
 
         let pool_key = format!("{host}:{port}");
-        let pool = sql_pool::cached_pool(&pool_key, tiberius_config, self.config.pool_max_size).await?;
-        let mut conn = pool
-            .get()
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to obtain a pooled SQL Server connection: {err}"))?;
+        let pool =
+            sql_pool::cached_pool(&pool_key, tiberius_config, self.config.pool_max_size).await?;
+        let mut conn = pool.get().await.map_err(|err| {
+            anyhow::anyhow!("failed to obtain a pooled SQL Server connection: {err}")
+        })?;
 
         let bound_refs: Vec<&dyn ToSql> = bound.iter().map(|param| param.as_ref()).collect();
         let stream = conn
             .query(&sql, &bound_refs)
             .await
             .map_err(classify_tiberius_error)?;
-        let rows = stream.into_first_result().await.map_err(classify_tiberius_error)?;
+        let rows = stream
+            .into_first_result()
+            .await
+            .map_err(classify_tiberius_error)?;
 
         let json_rows: Vec<Value> = rows
             .iter()
@@ -324,8 +356,15 @@ mod tests {
 
     #[test]
     fn build_statement_selects_from_a_view_with_no_parameters() {
-        let (sql, bound) =
-            build_statement("master", "INFORMATION_SCHEMA", "COLUMNS", Some("VIEW"), &[], &Map::new()).unwrap();
+        let (sql, bound) = build_statement(
+            "master",
+            "INFORMATION_SCHEMA",
+            "COLUMNS",
+            Some("VIEW"),
+            &[],
+            &Map::new(),
+        )
+        .unwrap();
         assert_eq!(sql, "SELECT * FROM [master].[INFORMATION_SCHEMA].[COLUMNS]");
         assert!(bound.is_empty());
     }
@@ -333,14 +372,29 @@ mod tests {
     #[test]
     fn build_statement_execs_a_proc_with_named_parameters() {
         let params = vec![
-            Param { name: "objname".to_string(), ordinal: 1, x_sql_type: "nvarchar(1035)".to_string() },
-            Param { name: "newname".to_string(), ordinal: 2, x_sql_type: "sysname".to_string() },
+            Param {
+                name: "objname".to_string(),
+                ordinal: 1,
+                x_sql_type: "nvarchar(1035)".to_string(),
+            },
+            Param {
+                name: "newname".to_string(),
+                ordinal: 2,
+                x_sql_type: "sysname".to_string(),
+            },
         ];
         let mut body = Map::new();
         body.insert("objname".to_string(), Value::String("t1".to_string()));
         body.insert("newname".to_string(), Value::String("t2".to_string()));
-        let (sql, bound) =
-            build_statement("master", "sys", "sp_rename", Some("SQL_STORED_PROCEDURE"), &params, &body).unwrap();
+        let (sql, bound) = build_statement(
+            "master",
+            "sys",
+            "sp_rename",
+            Some("SQL_STORED_PROCEDURE"),
+            &params,
+            &body,
+        )
+        .unwrap();
         assert_eq!(
             sql,
             "EXEC [master].[sys].[sp_rename] [objname] = @P1, [newname] = @P2"
@@ -350,7 +404,11 @@ mod tests {
 
     #[test]
     fn build_statement_selects_from_a_function_with_positional_placeholders() {
-        let params = vec![Param { name: "session_id".to_string(), ordinal: 1, x_sql_type: "smallint".to_string() }];
+        let params = vec![Param {
+            name: "session_id".to_string(),
+            ordinal: 1,
+            x_sql_type: "smallint".to_string(),
+        }];
         let mut body = Map::new();
         body.insert("session_id".to_string(), Value::from(52));
         let (sql, bound) = build_statement(
@@ -368,8 +426,15 @@ mod tests {
 
     #[test]
     fn build_statement_execs_a_parameterless_proc() {
-        let (sql, bound) =
-            build_statement("master", "sys", "sp_who", Some("SQL_STORED_PROCEDURE"), &[], &Map::new()).unwrap();
+        let (sql, bound) = build_statement(
+            "master",
+            "sys",
+            "sp_who",
+            Some("SQL_STORED_PROCEDURE"),
+            &[],
+            &Map::new(),
+        )
+        .unwrap();
         assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
         assert!(bound.is_empty());
     }

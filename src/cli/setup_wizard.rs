@@ -21,10 +21,8 @@ fn to_env_key(key: &str) -> String {
 
 async fn prompt_base_url() -> anyhow::Result<String> {
     tokio::task::spawn_blocking(|| {
-        inquire::Text::new(
-            "SQL Server host (or host:port -- defaults to port 1433 if omitted):",
-        )
-        .prompt()
+        inquire::Text::new("SQL Server host (or host:port -- defaults to port 1433 if omitted):")
+            .prompt()
     })
     .await?
     .map_err(anyhow::Error::from)

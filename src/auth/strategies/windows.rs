@@ -34,7 +34,9 @@ pub struct WindowsAuthStrategy;
 impl AuthStrategy for WindowsAuthStrategy {
     async fn authenticate(&self, config: &AuthConfig) -> anyhow::Result<Credentials> {
         let username = config.get("username").ok_or_else(|| {
-            AuthError::MissingCredentials("username (optionally DOMAIN\\user), password".to_string())
+            AuthError::MissingCredentials(
+                "username (optionally DOMAIN\\user), password".to_string(),
+            )
         })?;
         let password = config
             .get("password")

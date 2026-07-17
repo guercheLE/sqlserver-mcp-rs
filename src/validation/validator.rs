@@ -79,7 +79,10 @@ fn schemas_by_operation(api_version: &str) -> &'static HashMap<String, Operation
 /// re-deriving that from `EndpointRecord.input_schema`'s unresolved
 /// `$ref`s (see `data::store::ENDPOINT_COLUMNS` — that column stores the
 /// spec's `requestBody` as written, `$ref` and all).
-pub fn resolved_schemas_for(api_version: &str, operation_id: &str) -> Option<(&'static Value, &'static Value)> {
+pub fn resolved_schemas_for(
+    api_version: &str,
+    operation_id: &str,
+) -> Option<(&'static Value, &'static Value)> {
     schemas_by_operation(api_version)
         .get(operation_id)
         .map(|schemas| (&schemas.input_schema, &schemas.output_schema))

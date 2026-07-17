@@ -49,14 +49,20 @@ impl AzureAdAuthStrategy {
             return Ok(url.clone());
         }
         let tenant_id = config.get("tenant_id").ok_or_else(|| {
-            AuthError::MissingCredentials("tenant_id (or token_url), client_id, client_secret".to_string())
+            AuthError::MissingCredentials(
+                "tenant_id (or token_url), client_id, client_secret".to_string(),
+            )
         })?;
         Ok(format!(
             "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         ))
     }
 
-    fn from_token_response(data: TokenResponse, config: &AuthConfig, token_url: &str) -> Credentials {
+    fn from_token_response(
+        data: TokenResponse,
+        config: &AuthConfig,
+        token_url: &str,
+    ) -> Credentials {
         let mut credentials = Credentials::new();
         credentials.insert("access_token".to_string(), data.access_token);
         if let Some(expires_in) = data.expires_in {
@@ -64,7 +70,10 @@ impl AzureAdAuthStrategy {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            credentials.insert("expires_at".to_string(), (now_ms + expires_in * 1000).to_string());
+            credentials.insert(
+                "expires_at".to_string(),
+                (now_ms + expires_in * 1000).to_string(),
+            );
         }
         for key in ["client_id", "client_secret", "tenant_id", "scope"] {
             if let Some(value) = config.get(key) {
@@ -79,14 +88,17 @@ impl AzureAdAuthStrategy {
 #[async_trait]
 impl AuthStrategy for AzureAdAuthStrategy {
     async fn authenticate(&self, config: &AuthConfig) -> anyhow::Result<Credentials> {
-        let client_id = config
-            .get("client_id")
-            .ok_or_else(|| AuthError::MissingCredentials("client_id, client_secret, tenant_id".to_string()))?;
-        let client_secret = config
-            .get("client_secret")
-            .ok_or_else(|| AuthError::MissingCredentials("client_id, client_secret, tenant_id".to_string()))?;
+        let client_id = config.get("client_id").ok_or_else(|| {
+            AuthError::MissingCredentials("client_id, client_secret, tenant_id".to_string())
+        })?;
+        let client_secret = config.get("client_secret").ok_or_else(|| {
+            AuthError::MissingCredentials("client_id, client_secret, tenant_id".to_string())
+        })?;
         let token_url = Self::token_url(config)?;
-        let scope = config.get("scope").map(String::as_str).unwrap_or(DEFAULT_SCOPE);
+        let scope = config
+            .get("scope")
+            .map(String::as_str)
+            .unwrap_or(DEFAULT_SCOPE);
 
         let params = [
             ("grant_type", "client_credentials"),
@@ -146,7 +158,10 @@ mod tests {
 
     #[test]
     fn token_url_prefers_an_explicit_override() {
-        let config = AuthConfig::from([("token_url".to_string(), "https://example.com/token".to_string())]);
+        let config = AuthConfig::from([(
+            "token_url".to_string(),
+            "https://example.com/token".to_string(),
+        )]);
         assert_eq!(
             AzureAdAuthStrategy::token_url(&config).unwrap(),
             "https://example.com/token"

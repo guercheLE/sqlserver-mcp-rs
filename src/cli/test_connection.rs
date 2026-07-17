@@ -18,7 +18,12 @@ pub async fn run() -> anyhow::Result<()> {
         tiberius_config.trust_cert();
     }
 
-    let pool = sql_pool::cached_pool(&format!("{host}:{port}"), tiberius_config, config.pool_max_size).await?;
+    let pool = sql_pool::cached_pool(
+        &format!("{host}:{port}"),
+        tiberius_config,
+        config.pool_max_size,
+    )
+    .await?;
     let mut conn = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {

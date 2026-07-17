@@ -57,7 +57,10 @@ mod tests {
     #[tokio::test]
     async fn carries_username_and_password_through_unchanged() {
         let strategy = SqlServerAuthStrategy;
-        let credentials = strategy.authenticate(&config("sa", "s3cr3t")).await.unwrap();
+        let credentials = strategy
+            .authenticate(&config("sa", "s3cr3t"))
+            .await
+            .unwrap();
         assert_eq!(credentials.get("username").unwrap(), "sa");
         assert_eq!(credentials.get("password").unwrap(), "s3cr3t");
     }

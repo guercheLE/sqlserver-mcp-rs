@@ -63,7 +63,11 @@ fn parse_numeric(text: &str, scale: u8) -> anyhow::Result<Numeric> {
     }
     let padded_frac = format!("{frac_part:0<width$}", width = scale as usize);
     let digits = format!("{int_part}{padded_frac}");
-    let unscaled: i128 = if digits.is_empty() { 0 } else { digits.parse()? };
+    let unscaled: i128 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse()?
+    };
     Ok(Numeric::new_with_scale(sign * unscaled, scale))
 }
 
@@ -96,7 +100,10 @@ fn format_numeric(n: Numeric) -> String {
 /// itself already carries the SQL wire type unambiguously for every
 /// variant used here, keeping this function's return type uniform across
 /// every `x-sql-type` branch.
-pub fn json_to_param(value: &serde_json::Value, x_sql_type: &str) -> anyhow::Result<Box<dyn ToSql>> {
+pub fn json_to_param(
+    value: &serde_json::Value,
+    x_sql_type: &str,
+) -> anyhow::Result<Box<dyn ToSql>> {
     let base = base_type(x_sql_type);
     let param: Box<dyn ToSql> = match base.as_str() {
         "bit" => Box::new(value.as_bool()),
@@ -111,7 +118,9 @@ pub fn json_to_param(value: &serde_json::Value, x_sql_type: &str) -> anyhow::Res
             match value {
                 serde_json::Value::Null => Box::new(Option::<Numeric>::None),
                 serde_json::Value::String(s) => Box::new(Some(parse_numeric(s, scale)?)),
-                serde_json::Value::Number(n) => Box::new(Some(parse_numeric(&n.to_string(), scale)?)),
+                serde_json::Value::Number(n) => {
+                    Box::new(Some(parse_numeric(&n.to_string(), scale)?))
+                }
                 other => anyhow::bail!("expected a number or numeric string, got {other}"),
             }
         }
@@ -188,7 +197,9 @@ pub fn column_data_to_json(data: &ColumnData<'_>) -> serde_json::Value {
         ColumnData::I16(v) => v.map(Into::into).unwrap_or(serde_json::Value::Null),
         ColumnData::I32(v) => v.map(Into::into).unwrap_or(serde_json::Value::Null),
         ColumnData::I64(v) => v.map(Into::into).unwrap_or(serde_json::Value::Null),
-        ColumnData::F32(v) => v.map(|n| serde_json::Value::from(n as f64)).unwrap_or(serde_json::Value::Null),
+        ColumnData::F32(v) => v
+            .map(|n| serde_json::Value::from(n as f64))
+            .unwrap_or(serde_json::Value::Null),
         ColumnData::F64(v) => v.map(Into::into).unwrap_or(serde_json::Value::Null),
         ColumnData::Bit(v) => v.map(Into::into).unwrap_or(serde_json::Value::Null),
         // Rendered as an exact decimal string via `format_numeric` (not
@@ -244,7 +255,9 @@ fn temporal_to_json(data: &ColumnData<'_>) -> serde_json::Value {
     }
 
     let text = match data {
-        ColumnData::Date(Some(date)) => days_to_date(date.days() as i64, 1).format("%Y-%m-%d").to_string(),
+        ColumnData::Date(Some(date)) => days_to_date(date.days() as i64, 1)
+            .format("%Y-%m-%d")
+            .to_string(),
         ColumnData::Time(Some(time)) => time_of_day(time.increments(), time.scale())
             .format("%H:%M:%S%.f")
             .to_string(),
@@ -259,7 +272,8 @@ fn temporal_to_json(data: &ColumnData<'_>) -> serde_json::Value {
         ColumnData::DateTime(Some(dt)) => {
             let date = days_to_date(dt.days() as i64, 1900);
             let ns = dt.seconds_fragments() as i64 * 1_000_000_000 / 300;
-            let time = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap() + chrono::Duration::nanoseconds(ns);
+            let time = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                + chrono::Duration::nanoseconds(ns);
             chrono::NaiveDateTime::new(date, time)
                 .format("%Y-%m-%dT%H:%M:%S%.f")
                 .to_string()
