@@ -10,10 +10,8 @@
 
 use std::collections::HashMap;
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::config_schema::{
-    AuthMethod, Transport,
-};
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::credential_storage::save_credential;
+use sqlserver_mcp_catalog::core::config_schema::{AuthMethod, Transport};
+use sqlserver_mcp_catalog::core::credential_storage::save_credential;
 
 fn to_env_key(key: &str) -> String {
     key.to_uppercase()
@@ -135,17 +133,17 @@ async fn prompt_credentials(auth_method: AuthMethod) -> anyhow::Result<HashMap<S
 /// caller before this runs). Writing anywhere else (a stray `.env`-only
 /// var name, `config.json`, etc.) would leave the persisted config silently
 /// ignored on every subsequent run, since `load_config`'s cascade only ever
-/// reads `./sql-server-2025-master-msdb-sandbox-combined-catalog.config.yml` (local) or
-/// `~/.sql-server-2025-master-msdb-sandbox-combined-catalog/config.yml` (global).
+/// reads `./sqlserver-mcp.config.yml` (local) or
+/// `~/.sqlserver-mcp/config.yml` (global).
 async fn write_config_yaml(global: bool, config_fields: &serde_json::Value) -> anyhow::Result<()> {
     let yaml = serde_yaml::to_string(config_fields)?;
     let path = if global {
-        let dir = sql_server_2025_master_msdb_sandbox_combined_catalog::core::credential_storage::resolve_home_dir()
-            .join(".sql-server-2025-master-msdb-sandbox-combined-catalog");
+        let dir = sqlserver_mcp_catalog::core::credential_storage::resolve_home_dir()
+            .join(".sqlserver-mcp");
         std::fs::create_dir_all(&dir)?;
         dir.join("config.yml")
     } else {
-        std::path::PathBuf::from("sql-server-2025-master-msdb-sandbox-combined-catalog.config.yml")
+        std::path::PathBuf::from("sqlserver-mcp.config.yml")
     };
     std::fs::write(&path, yaml)?;
     println!("Wrote {}", path.display());
@@ -162,8 +160,8 @@ async fn prompt_persistence(
 ) -> anyhow::Result<()> {
     let choices = vec![
         "Write a .env file",
-        "Write a config.yml file (global — ~/.sql-server-2025-master-msdb-sandbox-combined-catalog/config.yml, read on every invocation on this machine)",
-        "Write a config.yml file (local — ./sql-server-2025-master-msdb-sandbox-combined-catalog.config.yml, read only from this directory)",
+        "Write a config.yml file (global — ~/.sqlserver-mcp/config.yml, read on every invocation on this machine)",
+        "Write a config.yml file (local — ./sqlserver-mcp.config.yml, read only from this directory)",
         "Print a ready-to-run CLI invocation (nothing written to disk)",
     ];
     let selection = tokio::task::spawn_blocking(move || {
@@ -195,7 +193,7 @@ async fn prompt_persistence(
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            println!("sql-server-2025-master-msdb-sandbox-combined-catalog start {flags}");
+            println!("sqlserver-mcp start {flags}");
         }
     }
     Ok(())
@@ -216,8 +214,8 @@ fn print_mcp_client_config(transport: Transport, env: &HashMap<String, String>) 
         Transport::Stdio => {
             let config = serde_json::json!({
                 "mcpServers": {
-                    "sql-server-2025-master-msdb-sandbox-combined-catalog": {
-                        "command": "sql-server-2025-master-msdb-sandbox-combined-catalog",
+                    "sqlserver-mcp": {
+                        "command": "sqlserver-mcp",
                         "args": ["start"],
                         "env": env,
                     }
@@ -231,21 +229,19 @@ fn print_mcp_client_config(transport: Transport, env: &HashMap<String, String>) 
                 .map(|(key, value)| format!("--{} {value:?}", key.to_lowercase().replace('_', "-")))
                 .collect::<Vec<_>>()
                 .join(" ");
-            println!(
-                "(equivalently: `sql-server-2025-master-msdb-sandbox-combined-catalog start {cli_args}`)"
-            );
+            println!("(equivalently: `sqlserver-mcp start {cli_args}`)");
         }
         Transport::Http => {
             let config = serde_json::json!({
                 "mcpServers": {
-                    "sql-server-2025-master-msdb-sandbox-combined-catalog": {
+                    "sqlserver-mcp": {
                         "url": "http://127.0.0.1:3000/mcp",
                     }
                 }
             });
             println!(
                 "\nMCP client config (http) — adjust the host/port to match how you run \
-                 `sql-server-2025-master-msdb-sandbox-combined-catalog http`:"
+                 `sqlserver-mcp http`:"
             );
             println!("{}", serde_json::to_string_pretty(&config).unwrap());
             println!(
@@ -269,45 +265,33 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
     save_credential("active-credentials", &serde_json::to_string(&credentials)?)?;
 
     let mut env: HashMap<String, String> = HashMap::new();
+    env.insert("SQLSERVER_URL".to_string(), url);
     env.insert(
-        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_URL".to_string(),
-        url,
-    );
-    env.insert(
-        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_AUTH_METHOD".to_string(),
+        "SQLSERVER_AUTH_METHOD".to_string(),
         serde_json::to_value(auth_method)?
             .as_str()
             .unwrap_or_default()
             .to_string(),
     );
+    env.insert("SQLSERVER_API_VERSION".to_string(), api_version);
     env.insert(
-        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_API_VERSION".to_string(),
-        api_version,
-    );
-    env.insert(
-        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRANSPORT".to_string(),
+        "SQLSERVER_TRANSPORT".to_string(),
         serde_json::to_value(transport)?
             .as_str()
             .unwrap_or_default()
             .to_string(),
     );
     for (key, value) in &credentials {
-        env.insert(
-            format!(
-                "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_{}",
-                to_env_key(key)
-            ),
-            value.clone(),
-        );
+        env.insert(format!("SQLSERVER_{}", to_env_key(key)), value.clone());
     }
 
     // Non-secret fields only, keyed exactly as `config_manager::load_config`
     // reads them back from YAML — credentials never go in this file.
     let config_fields = serde_json::json!({
-        "url": env.get("SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_URL"),
-        "auth_method": env.get("SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_AUTH_METHOD"),
-        "api_version": env.get("SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_API_VERSION"),
-        "transport": env.get("SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRANSPORT"),
+        "url": env.get("SQLSERVER_URL"),
+        "auth_method": env.get("SQLSERVER_AUTH_METHOD"),
+        "api_version": env.get("SQLSERVER_API_VERSION"),
+        "transport": env.get("SQLSERVER_TRANSPORT"),
     });
 
     prompt_persistence(&env, &config_fields).await?;
@@ -317,8 +301,6 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
         Transport::Stdio => "start",
         Transport::Http => "http",
     };
-    println!(
-        "Setup complete! Run: sql-server-2025-master-msdb-sandbox-combined-catalog {run_command}"
-    );
+    println!("Setup complete! Run: sqlserver-mcp {run_command}");
     Ok(())
 }

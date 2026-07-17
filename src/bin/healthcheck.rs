@@ -3,7 +3,7 @@
 // Standalone entry point for Docker's HEALTHCHECK instruction. Checks that
 // mcp_store.db is present and readable rather than depending on the running
 // server's transport — stdio mode has no HTTP endpoint to probe. Kept
-// dependency-free (no `use sql_server_2025_master_msdb_sandbox_combined_catalog::...`) so this binary stays fast
+// dependency-free (no `use sqlserver_mcp_catalog::...`) so this binary stays fast
 // to start and simple to reason about for a check that runs every 30s.
 
 use std::path::Path;

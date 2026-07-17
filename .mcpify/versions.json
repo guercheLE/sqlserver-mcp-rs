@@ -2,7 +2,7 @@
   "schema_version": 1,
   "language": "rust",
   "display_name": "SQL Server 2025 - master/msdb/sandbox combined catalog",
-  "project_name": "sql-server-2025-master-msdb-sandbox-combined-catalog",
+  "project_name": "sqlserver-mcp",
   "default_version": "2025",
   "versions": {
     "2025": {

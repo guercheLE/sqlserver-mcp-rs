@@ -4,7 +4,7 @@
 // currently has a store for (added at `generate`/`mcpify add-version` time),
 // showing which is the default/latest and which is active for this process.
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::config_manager::load_config;
+use sqlserver_mcp_catalog::core::config_manager::load_config;
 
 struct VersionRow {
     label: &'static str,

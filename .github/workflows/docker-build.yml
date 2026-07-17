@@ -15,4 +15,4 @@ jobs:
         with:
           context: .
           push: false
-          tags: sql-server-2025-master-msdb-sandbox-combined-catalog:ci
+          tags: sqlserver-mcp:ci

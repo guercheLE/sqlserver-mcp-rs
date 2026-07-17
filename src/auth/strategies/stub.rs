@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use super::super::auth_strategy::{AuthConfig, AuthStrategy, Credentials};
 
 /// No-op fallback strategy — the safe default when the target API requires
-/// no authentication, or before `sql-server-2025-master-msdb-sandbox-combined-catalog setup` has configured a
+/// no authentication, or before `sqlserver-mcp setup` has configured a
 /// real scheme. Always present so `AuthManager` never has to special-case a
 /// missing strategy.
 #[derive(Debug, Default)]

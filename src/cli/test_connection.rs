@@ -1,8 +1,8 @@
 // SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::auth::auth_manager::AuthManager;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::config_manager::load_config;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::services::sql_pool;
+use sqlserver_mcp_catalog::auth::auth_manager::AuthManager;
+use sqlserver_mcp_catalog::core::config_manager::load_config;
+use sqlserver_mcp_catalog::services::sql_pool;
 
 pub async fn run() -> anyhow::Result<()> {
     let config = load_config(serde_json::Map::new())?;

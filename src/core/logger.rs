@@ -7,7 +7,7 @@ use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 use super::log_transport::use_pretty_output;
 
-const LOG_LEVEL_ENV_VAR: &str = "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_LOG_LEVEL";
+const LOG_LEVEL_ENV_VAR: &str = "SQLSERVER_LOG_LEVEL";
 
 /// A type-erased `tracing_subscriber` layer — lets `otel::build_layer`'s
 /// OpenTelemetry bridge layer compose into the same subscriber
@@ -15,7 +15,7 @@ const LOG_LEVEL_ENV_VAR: &str = "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CA
 /// `otel`'s concrete layer type.
 pub type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
-/// `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_LOG_LEVEL`, defaulting to `"info"` when unset.
+/// `SQLSERVER_LOG_LEVEL`, defaulting to `"info"` when unset.
 pub fn resolve_log_level() -> String {
     std::env::var(LOG_LEVEL_ENV_VAR).unwrap_or_else(|_| "info".to_string())
 }

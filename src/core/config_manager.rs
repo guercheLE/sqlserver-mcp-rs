@@ -8,9 +8,9 @@ use super::config_schema::Config;
 use super::credential_storage::resolve_home_dir;
 use super::errors::McpifyError;
 
-const ENV_PREFIX: &str = "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG";
-const CONFIG_DIR_NAME: &str = ".sql-server-2025-master-msdb-sandbox-combined-catalog";
-const LOCAL_CONFIG_FILE: &str = "sql-server-2025-master-msdb-sandbox-combined-catalog.config.yml";
+const ENV_PREFIX: &str = "SQLSERVER";
+const CONFIG_DIR_NAME: &str = ".sqlserver-mcp";
+const LOCAL_CONFIG_FILE: &str = "sqlserver-mcp.config.yml";
 
 /// Shares `credential_storage::resolve_home_dir`'s cross-platform lookup
 /// (`HOME`, falling back to `USERPROFILE` on Windows, falling back to `.`)
@@ -58,9 +58,9 @@ fn env_overrides() -> Map<String, Value> {
 
 /// Resolves configuration through the strict, stop-at-first-match cascade
 /// (REQ-2.2): CLI flags -> env vars -> local file
-/// (`./sql-server-2025-master-msdb-sandbox-combined-catalog.config.yml`) -> home file
-/// (`~/.sql-server-2025-master-msdb-sandbox-combined-catalog/config.yml`) -> system file
-/// (`/etc/sql-server-2025-master-msdb-sandbox-combined-catalog/config.yml`) -> install-dir file -> built-in
+/// (`./sqlserver-mcp.config.yml`) -> home file
+/// (`~/.sqlserver-mcp/config.yml`) -> system file
+/// (`/etc/sqlserver-mcp/config.yml`) -> install-dir file -> built-in
 /// defaults (applied by `Config`'s own `#[serde(default = ...)]` fields).
 pub fn load_config(cli_flags: Map<String, Value>) -> Result<Config, McpifyError> {
     let install_dir = std::env::current_exe()
@@ -73,9 +73,7 @@ pub fn load_config(cli_flags: Map<String, Value>) -> Result<Config, McpifyError>
         env_overrides(),
         read_yaml_if_exists(&PathBuf::from(LOCAL_CONFIG_FILE)),
         read_yaml_if_exists(&home_dir().join(CONFIG_DIR_NAME).join("config.yml")),
-        read_yaml_if_exists(&PathBuf::from(
-            "/etc/sql-server-2025-master-msdb-sandbox-combined-catalog/config.yml",
-        )),
+        read_yaml_if_exists(&PathBuf::from("/etc/sqlserver-mcp/config.yml")),
         read_yaml_if_exists(&install_dir.join("config.yml")),
     ];
 

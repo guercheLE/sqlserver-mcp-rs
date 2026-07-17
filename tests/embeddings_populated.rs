@@ -15,21 +15,19 @@
 // version's `.db` bytes into the binary via `include_bytes!` at *compile
 // time* (`data::store::VERSION_STORE_FILES`/`VERSION_STORE_BYTES`) —
 // right after `mcpify generate`/`add-version`, before anyone has run
-// `sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings --all`, every `semantic_endpoints`
+// `sqlserver-mcp-populate-embeddings --all`, every `semantic_endpoints`
 // table is legitimately still empty, and this crate's own CI
 // (`.github/workflows/ci.yml`) never runs that populate step before
 // `cargo test`. Run this explicitly as a packaging/release smoke test,
 // after populating:
 //
-//     cargo run --release --bin sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings -- --all
+//     cargo run --release --bin sqlserver-mcp-populate-embeddings -- --all
 //     cargo test --test embeddings_populated -- --ignored
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::data::store::{
-    VERSION_STORE_FILES, open_store, resolve_store_path,
-};
+use sqlserver_mcp_catalog::data::store::{VERSION_STORE_FILES, open_store, resolve_store_path};
 
 #[test]
-#[ignore = "requires `sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings --all` to have been run first"]
+#[ignore = "requires `sqlserver-mcp-populate-embeddings --all` to have been run first"]
 fn semantic_endpoints_row_count_matches_endpoints_row_count_for_every_version() {
     let mut mismatches = Vec::new();
 

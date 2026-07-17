@@ -18,28 +18,22 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use clap::{Parser, Subcommand};
 use tokio::sync::Mutex;
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::auth::auth_manager::AuthManager;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::component_registry::ComponentRegistry;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::config_manager::load_config;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::config_schema::Transport;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::health_check_manager::HealthCheckManager;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::logger::init_logging;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::mcp_server::{
-    McpifyServer, connect_stdio,
-};
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::otel;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::core::shutdown_handler::{
-    install_shutdown_handlers, on_shutdown,
-};
-use sql_server_2025_master_msdb_sandbox_combined_catalog::data::store::{
-    open_store, resolve_store_path,
-};
-use sql_server_2025_master_msdb_sandbox_combined_catalog::http::server::start_http_server;
-use sql_server_2025_master_msdb_sandbox_combined_catalog::http::types::HttpServerConfig;
+use sqlserver_mcp_catalog::auth::auth_manager::AuthManager;
+use sqlserver_mcp_catalog::core::component_registry::ComponentRegistry;
+use sqlserver_mcp_catalog::core::config_manager::load_config;
+use sqlserver_mcp_catalog::core::config_schema::Transport;
+use sqlserver_mcp_catalog::core::health_check_manager::HealthCheckManager;
+use sqlserver_mcp_catalog::core::logger::init_logging;
+use sqlserver_mcp_catalog::core::mcp_server::{McpifyServer, connect_stdio};
+use sqlserver_mcp_catalog::core::otel;
+use sqlserver_mcp_catalog::core::shutdown_handler::{install_shutdown_handlers, on_shutdown};
+use sqlserver_mcp_catalog::data::store::{open_store, resolve_store_path};
+use sqlserver_mcp_catalog::http::server::start_http_server;
+use sqlserver_mcp_catalog::http::types::HttpServerConfig;
 
 #[derive(Parser)]
 #[command(
-    name = "sql-server-2025-master-msdb-sandbox-combined-catalog",
+    name = "sqlserver-mcp",
     about = "SQL Server 2025 - master/msdb/sandbox combined catalog MCP server",
     version
 )]
@@ -94,11 +88,10 @@ enum Command {
 async fn run_harness_server() -> anyhow::Result<()> {
     let config = load_config(serde_json::Map::new())?;
 
-    let (otel_layer, otel_provider) =
-        match otel::build_layer("sql-server-2025-master-msdb-sandbox-combined-catalog") {
-            Ok((layer, provider)) => (Some(layer), Some(provider)),
-            Err(_) => (None, None),
-        };
+    let (otel_layer, otel_provider) = match otel::build_layer("sqlserver-mcp") {
+        Ok((layer, provider)) => (Some(layer), Some(provider)),
+        Err(_) => (None, None),
+    };
     init_logging(otel_layer);
     install_shutdown_handlers();
     if let Some(provider) = otel_provider {
@@ -190,10 +183,7 @@ async fn main() -> anyhow::Result<()> {
             // SAFETY: single-threaded at this point, before `#[tokio::main]`
             // spawns any concurrent work that would also touch env vars.
             unsafe {
-                std::env::set_var(
-                    "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRANSPORT",
-                    "stdio",
-                );
+                std::env::set_var("SQLSERVER_TRANSPORT", "stdio");
             }
             run_harness_server().await
         }
@@ -205,27 +195,15 @@ async fn main() -> anyhow::Result<()> {
             // SAFETY: single-threaded at this point, before `#[tokio::main]`
             // spawns any concurrent work that would also touch env vars.
             unsafe {
-                std::env::set_var(
-                    "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRANSPORT",
-                    "http",
-                );
+                std::env::set_var("SQLSERVER_TRANSPORT", "http");
                 if let Some(host) = &host {
-                    std::env::set_var(
-                        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_HOST",
-                        host,
-                    );
+                    std::env::set_var("SQLSERVER_HOST", host);
                 }
                 if let Some(port) = port {
-                    std::env::set_var(
-                        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_PORT",
-                        port.to_string(),
-                    );
+                    std::env::set_var("SQLSERVER_PORT", port.to_string());
                 }
                 if let Some(cors_allow) = &cors_allow {
-                    std::env::set_var(
-                        "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_CORS_ALLOW",
-                        cors_allow,
-                    );
+                    std::env::set_var("SQLSERVER_CORS_ALLOW", cors_allow);
                 }
             }
             run_harness_server().await

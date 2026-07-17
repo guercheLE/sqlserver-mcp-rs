@@ -92,8 +92,8 @@ re-populate 768-dim vectors into a table this script is about to size for
 file (see this script's header comment for the full list). Re-apply those,
 `cargo build --all-targets && cargo test` to confirm, THEN run:
 
-  cargo build --release --bin sql-server-2025-master-msdb-sandbox-combined-catalog-resize-embeddings
-  ./target/release/sql-server-2025-master-msdb-sandbox-combined-catalog-resize-embeddings
-  cargo build --release --bin sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings
-  ./target/release/sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings --all
+  cargo build --release --bin sqlserver-mcp-resize-embeddings
+  ./target/release/sqlserver-mcp-resize-embeddings
+  cargo build --release --bin sqlserver-mcp-populate-embeddings
+  ./target/release/sqlserver-mcp-populate-embeddings --all
 EOF

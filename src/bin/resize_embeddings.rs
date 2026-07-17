@@ -24,9 +24,7 @@
 
 use std::path::Path;
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::data::store::{
-    VERSION_STORE_FILES, open_store_read_write,
-};
+use sqlserver_mcp_catalog::data::store::{VERSION_STORE_FILES, open_store_read_write};
 
 /// Must match `services::embedding_service`'s active model's native
 /// output dimension -- fastembed's `EmbeddingModel::AllMiniLML6V2` is

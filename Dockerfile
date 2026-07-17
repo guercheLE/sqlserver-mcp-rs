@@ -23,12 +23,12 @@ COPY mcp_store*.db ./
 
 # Build the helper first, populate every version, then perform the final
 # release build so `include_bytes!` captures the populated database bytes.
-RUN cargo build --locked --release --bin sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings
+RUN cargo build --locked --release --bin sqlserver-mcp-populate-embeddings
 
 # mcp_store.db leaves the Rust generator with an empty semantic_endpoints
 # table (vectors are computed here, not by mcpify itself — see the plan's
 # embeddings decision), so it must be populated before the image is usable.
-RUN ./target/release/sql-server-2025-master-msdb-sandbox-combined-catalog-populate-embeddings --all
+RUN ./target/release/sqlserver-mcp-populate-embeddings --all
 RUN cargo build --locked --release
 
 # `fastembed`/`ort` (Story R6) may dynamically link an ONNX Runtime shared
@@ -44,10 +44,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/sql-server-2025-master-msdb-sandbox-combined-catalog ./sql-server-2025-master-msdb-sandbox-combined-catalog
-COPY --from=builder /app/target/release/sql-server-2025-master-msdb-sandbox-combined-catalog-healthcheck ./sql-server-2025-master-msdb-sandbox-combined-catalog-healthcheck
+COPY --from=builder /app/target/release/sqlserver-mcp ./sqlserver-mcp
+COPY --from=builder /app/target/release/sqlserver-mcp-healthcheck ./sqlserver-mcp-healthcheck
 COPY --from=builder /app/mcp_store*.db ./
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["./sql-server-2025-master-msdb-sandbox-combined-catalog-healthcheck"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["./sqlserver-mcp-healthcheck"]
 
-ENTRYPOINT ["./sql-server-2025-master-msdb-sandbox-combined-catalog"]
+ENTRYPOINT ["./sqlserver-mcp"]

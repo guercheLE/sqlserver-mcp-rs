@@ -10,8 +10,6 @@ pub enum AuthError {
     #[error("access token expired and could not be refreshed")]
     TokenExpired,
 
-    #[error(
-        "no valid credentials for auth method '{0}'; run `sql-server-2025-master-msdb-sandbox-combined-catalog setup`"
-    )]
+    #[error("no valid credentials for auth method '{0}'; run `sqlserver-mcp setup`")]
     NoActiveCredentials(String),
 }

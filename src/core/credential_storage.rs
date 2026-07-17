@@ -9,7 +9,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use keyring::Entry;
 use sha2::{Digest, Sha256};
 
-const SERVICE_NAME: &str = "sql-server-2025-master-msdb-sandbox-combined-catalog";
+const SERVICE_NAME: &str = "sqlserver-mcp";
 
 /// Resolves the user's home directory cross-platform: `HOME` (Unix/macOS),
 /// falling back to `USERPROFILE` (Windows), falling back to the current
@@ -24,7 +24,7 @@ pub fn resolve_home_dir() -> PathBuf {
 }
 
 fn config_dir() -> PathBuf {
-    resolve_home_dir().join(".sql-server-2025-master-msdb-sandbox-combined-catalog")
+    resolve_home_dir().join(".sqlserver-mcp")
 }
 
 fn fallback_file() -> PathBuf {

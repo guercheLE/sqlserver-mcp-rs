@@ -13,10 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-use sql_server_2025_master_msdb_sandbox_combined_catalog::data::store::{
-    VERSION_STORE_FILES, open_store_read_write,
-};
-use sql_server_2025_master_msdb_sandbox_combined_catalog::services::embedding_service::embed;
+use sqlserver_mcp_catalog::data::store::{VERSION_STORE_FILES, open_store_read_write};
+use sqlserver_mcp_catalog::services::embedding_service::embed;
 
 struct EndpointRow {
     operation_id: String,

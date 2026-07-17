@@ -16,7 +16,7 @@ mkdir -p profile
 cargo build --release --features profiling
 
 samply record --save-only --unstable-presymbolicate -o profile/profile.json.gz -- \
-  ./target/release/sql-server-2025-master-msdb-sandbox-combined-catalog search "test query"
+  ./target/release/sqlserver-mcp search "test query"
 
 python3 scripts/samply_to_text.py \
   profile/profile.json.gz \

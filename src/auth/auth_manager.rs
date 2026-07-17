@@ -10,7 +10,7 @@ use super::strategies::sql_server::SqlServerAuthStrategy;
 use super::strategies::windows::WindowsAuthStrategy;
 
 const CREDENTIAL_ACCOUNT: &str = "active-credentials";
-const ENV_PREFIX: &str = "SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG";
+const ENV_PREFIX: &str = "SQLSERVER";
 
 /// Builds an `AuthConfig` straight from the `<PREFIX>_USERNAME`/`_PASSWORD`
 /// (SQL Server/Windows auth) or `<PREFIX>_CLIENT_ID`/`_CLIENT_SECRET`/
