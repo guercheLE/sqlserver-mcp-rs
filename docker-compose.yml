@@ -1,0 +1,25 @@
+services:
+  sql-server-2025-master-msdb-sandbox-combined-catalog:
+    build: .
+    image: sql-server-2025-master-msdb-sandbox-combined-catalog:latest
+    command: ["start"]
+    env_file:
+      - .env
+    volumes:
+      - ~/.sql-server-2025-master-msdb-sandbox-combined-catalog:/root/.sql-server-2025-master-msdb-sandbox-combined-catalog
+    stdin_open: true
+    tty: true
+
+  sql-server-2025-master-msdb-sandbox-combined-catalog-http:
+    build: .
+    image: sql-server-2025-master-msdb-sandbox-combined-catalog:latest
+    command: ["http", "--host", "0.0.0.0", "--port", "3000"]
+    env_file:
+      - .env
+    environment:
+      SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRANSPORT: http
+      SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_PORT: "3000"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ~/.sql-server-2025-master-msdb-sandbox-combined-catalog:/root/.sql-server-2025-master-msdb-sandbox-combined-catalog

@@ -1,0 +1,59 @@
+x-mssql-common: &mssql-common
+  platform: linux/amd64
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_PID: Developer
+    MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+  healthcheck:
+    # The 2017 image ships the older `mssql-tools` package (sqlcmd at
+    # /opt/mssql-tools/bin/sqlcmd); 2019+ ship `mssql-tools18`
+    # (/opt/mssql-tools18/bin/sqlcmd, which also requires -C to trust the
+    # server cert). Try the newer path first, fall back to the older one.
+    test: ["CMD-SHELL", "SQLCMD=/opt/mssql-tools18/bin/sqlcmd; [ -x \"$$SQLCMD\" ] || SQLCMD=/opt/mssql-tools/bin/sqlcmd; \"$$SQLCMD\" -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 90s
+
+services:
+  mssql2017:
+    <<: *mssql-common
+    image: mcr.microsoft.com/mssql/server:2017-latest
+    container_name: mssql2017
+    ports:
+      - "14330:1433"
+    volumes:
+      - mssql2017-data:/var/opt/mssql
+
+  mssql2019:
+    <<: *mssql-common
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: mssql2019
+    ports:
+      - "14331:1433"
+    volumes:
+      - mssql2019-data:/var/opt/mssql
+
+  mssql2022:
+    <<: *mssql-common
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: mssql2022
+    ports:
+      - "14332:1433"
+    volumes:
+      - mssql2022-data:/var/opt/mssql
+
+  mssql2025:
+    <<: *mssql-common
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    container_name: mssql2025
+    ports:
+      - "14333:1433"
+    volumes:
+      - mssql2025-data:/var/opt/mssql
+
+volumes:
+  mssql2017-data:
+  mssql2019-data:
+  mssql2022-data:
+  mssql2025-data:

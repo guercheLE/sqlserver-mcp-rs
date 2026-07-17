@@ -1,0 +1,44 @@
+language: rust
+output: .
+force: true
+publish_registry: false
+publication:
+  license: MIT
+  repository: null
+  readme: README.md
+  authors: []
+  keywords: []
+  categories: []
+  exclude:
+  - /.github
+  - /.mcpify
+  - /docs
+  - /scripts
+  - /openapi
+  - /Dockerfile
+  - /docker-compose.yml
+  - /.dockerignore
+  - /.env.example
+  - /mcpify.yaml
+default_headers: {}
+auth: []
+versions:
+- version: '2025'
+  source: docs/sqlserver-eda-openapi-pipeline/openapi/2025/combined.yaml
+  default: true
+  preprocess: []
+- version: '2022'
+  source: docs/sqlserver-eda-openapi-pipeline/openapi/2022/combined.yaml
+  default: false
+  preprocess: []
+- version: '2019'
+  source: docs/sqlserver-eda-openapi-pipeline/openapi/2019/combined.yaml
+  default: false
+  preprocess: []
+- version: '2017'
+  source: docs/sqlserver-eda-openapi-pipeline/openapi/2017/combined.yaml
+  default: false
+  preprocess: []
+version_policy:
+  mode: all
+package_size_limit_mb: 100

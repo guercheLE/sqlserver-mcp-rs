@@ -1,0 +1,17 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = ["shell", "powershell"]
+# ONNX Runtime does not provide an x86_64-apple-darwin prebuilt binary.
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+install-path = "CARGO_HOME"
+install-updater = false
+# fastembed/ort Windows binaries use the dynamic CRT.
+msvc-crt-static = false
+
+[dist.github-custom-runners]
+# ONNX Runtime requires glibc >= 2.38.
+x86_64-unknown-linux-gnu = "ubuntu-24.04"

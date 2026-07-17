@@ -1,1 +1,108 @@
-# sqlserver-mcp-rs
+# sql-server-2025-master-msdb-sandbox-combined-catalog
+
+An MCP (Model Context Protocol) server exposing SQL Server's curated system
+stored procedures, functions, DMVs/DMFs, and catalog views (master/msdb/
+sandbox databases) across SQL Server 2017/2019/2022/2025 — scaffolded by
+[mcpify](https://github.com/guercheLE/mcpify) from a synthetic OpenAPI
+representation (see `docs/sqlserver-eda-openapi-pipeline/`), then hand-wired
+to a real TDS connection (via [`tiberius`](https://github.com/prisma/tiberius))
+instead of mcpify's default HTTP client, since these operations describe SQL
+objects, not HTTP endpoints.
+
+Exposes exactly 3 tools — `search`, `get`, `call` — backed by an embedded
+semantic database (`mcp_store.db`, one per SQL Server version — `versions`
+lists the ones this build knows about), so an LLM never needs the full
+catalog surface in context.
+
+## Install
+
+```bash
+cargo build --release
+```
+
+## Setup
+
+```bash
+cargo run -- setup
+```
+
+Interactively collects the SQL Server host and the credentials your chosen auth method needs, then lets you persist them as a `.env` file, a `config.json` file, or a ready-to-run CLI invocation.
+
+## Configuration
+
+| Env var | Purpose |
+|---|---|
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_URL` | SQL Server host, or `host:port`. |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_AUTH_METHOD` | One of `sql_server` / `windows` / `azure_ad` — see `docs/sqlserver-eda-openapi-pipeline/README.md`'s `securitySchemes` documentation for what each instance/version supports. |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_USERNAME` / `..._PASSWORD` | `sql_server`/`windows` auth — checked before the OS keychain/encrypted-file fallback. |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_CLIENT_ID` / `..._CLIENT_SECRET` / `..._TENANT_ID` | `azure_ad` auth (client-credentials grant against `https://database.windows.net/.default`). |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_SQL_PORT` | TDS port when `URL` has no `:port` suffix (default `1433`). |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_TRUST_SERVER_CERT` | Trust the server's TLS cert without CA verification (default `true` — a local/dev instance's self-signed cert; set `false` for a production CA-signed cert). |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_POOL_MAX_SIZE` | Max pooled SQL Server connections (default `10`). |
+| `SQL_SERVER_2025_MASTER_MSDB_SANDBOX_COMBINED_CATALOG_LOG_LEVEL` | Log verbosity (`trace`/`debug`/`info`/`warn`/`error`). |
+
+See `.env.example` for the full list of supported variables.
+
+Windows Authentication (`windows`) only works when this server itself runs on
+Windows — `tiberius`'s NTLM/SSPI binding is a native-Windows feature; on
+Linux/macOS (this pipeline's primary target, see `docs/sqlserver-eda-openapi-pipeline/docker-compose.yml`)
+it fails with a clear error at connection time. Use `sql_server` or
+`azure_ad` there instead.
+
+## Usage
+
+### Terminal Client (default)
+
+```bash
+sql-server-2025-master-msdb-sandbox-combined-catalog search "create an issue"
+sql-server-2025-master-msdb-sandbox-combined-catalog get <operationId>
+sql-server-2025-master-msdb-sandbox-combined-catalog call <operationId> --args '{"key":"value"}'
+```
+
+### Harness Server
+
+```bash
+sql-server-2025-master-msdb-sandbox-combined-catalog start                              # stdio transport (default)
+sql-server-2025-master-msdb-sandbox-combined-catalog http --host 127.0.0.1 --port 3000  # HTTP transport
+```
+
+## Docker
+
+```bash
+# Stdio: the MCP client launches this one-off process and owns its stdin/stdout pipes
+docker compose run --rm -T sql-server-2025-master-msdb-sandbox-combined-catalog
+
+# HTTP: a long-running network endpoint published on http://localhost:3000
+docker compose up sql-server-2025-master-msdb-sandbox-combined-catalog-http
+```
+
+Run these commands from the repository root. Docker Compose automatically discovers `docker-compose.yml`; `sql-server-2025-master-msdb-sandbox-combined-catalog` and `sql-server-2025-master-msdb-sandbox-combined-catalog-http` are service names inside that file, not filenames. Writing `docker compose -f docker-compose.yml ...` is equivalent, but `-f` is only needed when the file has another name or location, or when combining multiple Compose files.
+
+Both services read configuration from a local `.env` file (copy `.env.example`) and persist credentials and configuration under `~/.sql-server-2025-master-msdb-sandbox-combined-catalog` on the host. For stdio, `-T` disables pseudo-TTY allocation so MCP JSON-RPC stays on raw stdin/stdout, and `--rm` removes the one-off container when the client exits.
+
+Stdio is a process transport, not a listening service: the MCP client must start the server and communicate through that exact child process's stdin/stdout. This is useful when an MCP client is configured to launch `docker compose run --rm -T sql-server-2025-master-msdb-sandbox-combined-catalog`, in local scripts or CI that directly exchange MCP messages with the process, or in a custom image where your application launches the generated server's `start` subcommand as a child process. Merely putting the application and server in the same image—or starting the stdio container separately with `docker compose up`—does not connect their streams. One stdio server process normally serves one client. Use HTTP when independently started applications, multiple clients, another container, or a remote machine need to connect over the network.
+
+## Testing
+
+```bash
+cargo test
+```
+
+## Coverage
+
+```bash
+bash scripts/coverage.sh   # writes target/coverage/html/index.html (requires cargo-llvm-cov)
+```
+
+## Profiling
+
+```bash
+bash scripts/profile.sh   # CPU profiling via samply, writes profile/bottleneck-report.md
+cargo run --release --features profiling -- search "test query"   # heap profiling via dhat-rs, writes dhat-heap.json
+```
+
+`profile/bottleneck-report.md` combines coverage gaps with the hottest CPU functions in one small text file — paste it into an LLM (or hand it to another tool) to find and fix bottlenecks. Requires [samply](https://github.com/mstange/samply) (`cargo install samply`).
+
+---
+
+Generated by mcpify — do not hand-edit generated files; re-run mcpify against an updated OpenAPI spec instead.
