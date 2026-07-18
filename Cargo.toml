@@ -108,7 +108,7 @@ tokio-util = { version = "0.7.18", default-features = false, features = ["compat
 chrono = "0.4.45"
 
 [features]
-# Opt-in heap profiling via dhat-rs (scripts/profile.sh) — a pure-library
+# Opt-in heap profiling via dhat-rs (scripts/profile-heap.sh) — a pure-library
 # profiler with no external OS tool needed, so it works identically on
 # every platform. Zero cost when the feature isn't enabled.
 profiling = ["dep:dhat"]

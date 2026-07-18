@@ -438,4 +438,51 @@ mod tests {
         assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
         assert!(bound.is_empty());
     }
+
+    #[test]
+    fn ordered_params_follow_the_schema_ordinals() {
+        let schema = serde_json::json!({
+            "properties": {
+                "second": { "x-sql-ordinal": 2, "x-sql-type": "int" },
+                "first": { "x-sql-ordinal": 1, "x-sql-type": "nvarchar(20)" }
+            }
+        });
+
+        let params = ordered_params(&schema);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "first");
+        assert_eq!(params[0].x_sql_type, "nvarchar(20)");
+        assert_eq!(params[1].name, "second");
+    }
+
+    #[test]
+    fn build_statement_rejects_an_unsafe_parameter_name() {
+        let params = vec![Param {
+            name: "unsafe name".to_string(),
+            ordinal: 1,
+            x_sql_type: "int".to_string(),
+        }];
+
+        assert!(
+            build_statement(
+                "master",
+                "sys",
+                "sp_example",
+                Some("SQL_STORED_PROCEDURE"),
+                &params,
+                &Map::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn protocol_errors_are_classified_as_server_failures() {
+        let error =
+            classify_tiberius_error(tiberius::error::Error::Protocol("invalid packet".into()));
+        assert_eq!(
+            error.to_string(),
+            "SQL Server connection/protocol error (500-equivalent): Protocol error: invalid packet"
+        );
+    }
 }

@@ -51,6 +51,12 @@ enum Command {
         query: String,
         #[arg(short = 'l', long, default_value_t = 5)]
         limit: usize,
+        /// Warm-up searches performed before measured profiling iterations.
+        #[arg(long, hide = true, default_value_t = 0)]
+        profile_warmups: usize,
+        /// Searches performed in the measured profiling workload.
+        #[arg(long, hide = true, default_value_t = 1)]
+        profile_iterations: usize,
     },
     /// Show the schema, path, method, and documentation for one operation
     Get { operation_id: String },
@@ -176,7 +182,12 @@ async fn main() -> anyhow::Result<()> {
 
     let result = match cli.command {
         Command::Setup => cli::setup::run().await,
-        Command::Search { query, limit } => cli::search::run(&query, limit).await,
+        Command::Search {
+            query,
+            limit,
+            profile_warmups,
+            profile_iterations,
+        } => cli::search::run(&query, limit, profile_warmups, profile_iterations).await,
         Command::Get { operation_id } => cli::get::run(&operation_id).await,
         Command::Call { operation_id, args } => cli::call::run(&operation_id, &args).await,
         Command::Start => {
@@ -219,4 +230,38 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_accepts_hidden_profiling_workload_controls() {
+        let cli = Cli::try_parse_from([
+            "sqlserver-mcp",
+            "search",
+            "test query",
+            "--profile-warmups",
+            "2",
+            "--profile-iterations",
+            "10",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Search {
+                query,
+                limit,
+                profile_warmups,
+                profile_iterations,
+            } => {
+                assert_eq!(query, "test query");
+                assert_eq!(limit, 5);
+                assert_eq!(profile_warmups, 2);
+                assert_eq!(profile_iterations, 10);
+            }
+            _ => panic!("expected search command"),
+        }
+    }
 }

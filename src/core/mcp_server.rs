@@ -210,3 +210,60 @@ where
     running.waiting().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config_schema::AuthMethod;
+
+    fn server() -> McpifyServer {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "url": "localhost",
+            "auth_method": "sql_server"
+        }))
+        .unwrap();
+        McpifyServer::new(
+            "2025".to_string(),
+            config,
+            Arc::new(Mutex::new(AuthManager::new(AuthMethod::SqlServer))),
+        )
+    }
+
+    #[tokio::test]
+    async fn successful_tool_execution_returns_pretty_json_text() {
+        let result = server()
+            .run_tool("test", async { Ok(serde_json::json!({ "answer": 42 })) })
+            .await
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(
+            result.content[0].as_text().unwrap().text,
+            "{\n  \"answer\": 42\n}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_tool_execution_returns_a_caller_visible_error() {
+        let result = server()
+            .run_tool("test", async {
+                Err::<serde_json::Value, _>(anyhow::anyhow!("operation failed"))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].as_text().unwrap().text,
+            "operation failed"
+        );
+    }
+
+    #[test]
+    fn server_info_advertises_only_the_curated_tool_surface() {
+        let info = server().get_info();
+        assert!(info.capabilities.tools.is_some());
+        assert!(info.instructions.unwrap().contains("exactly 3 tools"));
+    }
+}

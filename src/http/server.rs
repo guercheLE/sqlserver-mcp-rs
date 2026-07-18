@@ -123,3 +123,61 @@ pub async fn start_http_server(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+
+    use super::*;
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_healthy_components() {
+        let mut registry = ComponentRegistry::new();
+        registry.register("store", true);
+        let state = AppState {
+            registry: Arc::new(TokioMutex::new(registry)),
+        };
+
+        let response = healthz(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            serde_json::json!({ "status": "Healthy", "components": 1 })
+        );
+    }
+
+    #[tokio::test]
+    async fn healthz_returns_service_unavailable_for_a_critical_failure() {
+        let mut registry = ComponentRegistry::new();
+        registry.register("store", true);
+        registry.report(
+            "store",
+            ComponentStatus::Unhealthy,
+            Some("unavailable".to_string()),
+        );
+        let state = AppState {
+            registry: Arc::new(TokioMutex::new(registry)),
+        };
+
+        let response = healthz(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response_json(response).await["status"], "Unhealthy");
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_returns_prometheus_text() {
+        let response = metrics_handler().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("http_requests_total")
+        );
+    }
+}

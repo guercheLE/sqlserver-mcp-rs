@@ -97,11 +97,27 @@ bash scripts/coverage.sh   # writes target/coverage/html/index.html (requires ca
 ## Profiling
 
 ```bash
-bash scripts/profile.sh   # CPU profiling via samply, writes profile/bottleneck-report.md
-cargo run --release --features profiling -- search "test query"   # heap profiling via dhat-rs, writes dhat-heap.json
+bash scripts/profile.sh        # clean CPU profiling via samply
+bash scripts/profile-heap.sh   # separate heap profiling via dhat-rs
 ```
 
-`profile/bottleneck-report.md` combines coverage gaps with the hottest CPU functions in one small text file — paste it into an LLM (or hand it to another tool) to find and fix bottlenecks. Requires [samply](https://github.com/mstange/samply) (`cargo install samply`).
+Both scripts profile a repeated in-process `search "test query"` workload so
+the one-time embedding-model startup cost is amortized. `profile.sh` uses 3
+warmups and 250 measured iterations; `profile-heap.sh` uses 1 warmup and 5
+measured iterations. Override these defaults with `PROFILE_QUERY`,
+`PROFILE_WARMUPS`, `PROFILE_ITERATIONS`, `PROFILE_HEAP_WARMUPS`, and
+`PROFILE_HEAP_ITERATIONS`.
+
+The scripts default `SQLSERVER_URL=localhost` and
+`SQLSERVER_AUTH_METHOD=sql_server` when those variables are unset. This is
+safe for the profiling workload because `search` reads only the embedded
+catalog and does not connect to SQL Server.
+
+`profile/bottleneck-report.md` combines the largest coverage gaps with the
+hottest CPU functions in one small text file. CPU profiling deliberately uses
+an ordinary release build; DHAT allocator instrumentation is enabled only by
+`profile-heap.sh`, so it cannot distort Samply's CPU samples. Requires
+[samply](https://github.com/mstange/samply) (`cargo install samply`).
 
 ---
 

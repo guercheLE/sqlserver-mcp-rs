@@ -94,6 +94,37 @@ fn format_numeric(n: Numeric) -> String {
     if negative { format!("-{body}") } else { body }
 }
 
+fn integer_value(value: &serde_json::Value, x_sql_type: &str) -> anyhow::Result<Option<i64>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        _ => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("expected an integer for {x_sql_type}, got {value}")),
+    }
+}
+
+fn floating_value(value: &serde_json::Value, x_sql_type: &str) -> anyhow::Result<Option<f64>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        _ => value
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("expected a number for {x_sql_type}, got {value}")),
+    }
+}
+
+fn string_value<'a>(
+    value: &'a serde_json::Value,
+    x_sql_type: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(value) => Ok(Some(value)),
+        other => anyhow::bail!("expected a string for {x_sql_type}, got {other}"),
+    }
+}
+
 /// Builds a boxed `ToSql` value for one input parameter, from its JSON
 /// argument value and declared `x-sql-type`. Returns `ColumnData` boxed
 /// behind `ToSql` (rather than the concrete Rust type) since `ColumnData`
@@ -106,13 +137,41 @@ pub fn json_to_param(
 ) -> anyhow::Result<Box<dyn ToSql>> {
     let base = base_type(x_sql_type);
     let param: Box<dyn ToSql> = match base.as_str() {
-        "bit" => Box::new(value.as_bool()),
-        "tinyint" => Box::new(value.as_u64().map(|n| n as u8)),
-        "smallint" => Box::new(value.as_i64().map(|n| n as i16)),
-        "int" => Box::new(value.as_i64().map(|n| n as i32)),
-        "bigint" => Box::new(value.as_i64()),
-        "real" => Box::new(value.as_f64().map(|n| n as f32)),
-        "float" => Box::new(value.as_f64()),
+        "bit" => Box::new(match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::Bool(value) => Some(*value),
+            other => anyhow::bail!("expected a boolean for bit, got {other}"),
+        }),
+        "tinyint" => Box::new(
+            integer_value(value, x_sql_type)?
+                .map(u8::try_from)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("value {value} is outside the range for tinyint"))?,
+        ),
+        "smallint" => Box::new(
+            integer_value(value, x_sql_type)?
+                .map(i16::try_from)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("value {value} is outside the range for smallint"))?,
+        ),
+        "int" => Box::new(
+            integer_value(value, x_sql_type)?
+                .map(i32::try_from)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("value {value} is outside the range for int"))?,
+        ),
+        "bigint" => Box::new(integer_value(value, x_sql_type)?),
+        "real" => Box::new(
+            floating_value(value, x_sql_type)?
+                .map(|n| {
+                    if n < f32::MIN as f64 || n > f32::MAX as f64 {
+                        anyhow::bail!("value {value} is outside the range for real");
+                    }
+                    Ok(n as f32)
+                })
+                .transpose()?,
+        ),
+        "float" => Box::new(floating_value(value, x_sql_type)?),
         "decimal" | "numeric" | "money" | "smallmoney" => {
             let (_, scale) = precision_scale(x_sql_type);
             match value {
@@ -124,33 +183,39 @@ pub fn json_to_param(
                 other => anyhow::bail!("expected a number or numeric string, got {other}"),
             }
         }
-        "uniqueidentifier" => match value.as_str() {
-            Some(s) => Box::new(Some(uuid::Uuid::parse_str(s)?)),
-            None => Box::new(Option::<uuid::Uuid>::None),
-        },
-        "date" => match value.as_str() {
-            Some(s) => Box::new(Some(chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")?)),
-            None => Box::new(Option::<chrono::NaiveDate>::None),
-        },
-        "time" => match value.as_str() {
-            Some(s) => Box::new(Some(parse_naive_time(s)?)),
-            None => Box::new(Option::<chrono::NaiveTime>::None),
-        },
-        "datetime" | "datetime2" | "smalldatetime" => match value.as_str() {
-            Some(s) => Box::new(Some(parse_naive_datetime(s)?)),
-            None => Box::new(Option::<chrono::NaiveDateTime>::None),
-        },
-        "datetimeoffset" => match value.as_str() {
-            Some(s) => Box::new(Some(chrono::DateTime::parse_from_rfc3339(s)?)),
-            None => Box::new(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-        },
-        "binary" | "varbinary" | "image" | "rowversion" | "timestamp" => match value.as_str() {
-            Some(s) => Box::new(Some(
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
-                    .map_err(|err| anyhow::anyhow!("expected base64-encoded binary: {err}"))?,
-            )),
-            None => Box::new(Option::<Vec<u8>>::None),
-        },
+        "uniqueidentifier" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(uuid::Uuid::parse_str)
+                .transpose()?,
+        ),
+        "date" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d"))
+                .transpose()?,
+        ),
+        "time" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(parse_naive_time)
+                .transpose()?,
+        ),
+        "datetime" | "datetime2" | "smalldatetime" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(parse_naive_datetime)
+                .transpose()?,
+        ),
+        "datetimeoffset" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(chrono::DateTime::parse_from_rfc3339)
+                .transpose()?,
+        ),
+        "binary" | "varbinary" | "image" | "rowversion" | "timestamp" => Box::new(
+            string_value(value, x_sql_type)?
+                .map(|s| {
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
+                        .map_err(|err| anyhow::anyhow!("expected base64-encoded binary: {err}"))
+                })
+                .transpose()?,
+        ),
         // char/varchar/nchar/nvarchar/text/ntext/xml/sysname/sql_variant and
         // anything else not enumerated above: stringify. This is the safe
         // default for the curated system-catalog surface this project
@@ -303,7 +368,14 @@ fn temporal_to_json(data: &ColumnData<'_>) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
+
+    fn bound_value(value: serde_json::Value, x_sql_type: &str) -> serde_json::Value {
+        let parameter = json_to_param(&value, x_sql_type).unwrap();
+        column_data_to_json(&parameter.to_sql())
+    }
 
     #[test]
     fn base_type_strips_length_and_lowercases() {
@@ -348,5 +420,202 @@ mod tests {
         json_to_param(&serde_json::json!(42), "int").unwrap();
         json_to_param(&serde_json::json!("hello"), "nvarchar(50)").unwrap();
         json_to_param(&serde_json::Value::Null, "int").unwrap();
+    }
+
+    #[test]
+    fn json_to_param_rejects_numbers_outside_the_sql_type_range() {
+        assert!(json_to_param(&serde_json::json!(256), "tinyint").is_err());
+        assert!(json_to_param(&serde_json::json!(32_768), "smallint").is_err());
+        assert!(json_to_param(&serde_json::json!(2_147_483_648_i64), "int").is_err());
+        assert!(json_to_param(&serde_json::json!(1.0e40), "real").is_err());
+    }
+
+    #[test]
+    fn json_to_param_rejects_a_non_boolean_bit_value() {
+        assert!(json_to_param(&serde_json::json!("true"), "bit").is_err());
+    }
+
+    #[test]
+    fn json_to_param_rejects_values_with_the_wrong_json_shape() {
+        for (value, x_sql_type) in [
+            (serde_json::json!("1.5"), "float"),
+            (serde_json::json!(42), "uniqueidentifier"),
+            (serde_json::json!(42), "date"),
+            (serde_json::json!(42), "time"),
+            (serde_json::json!(42), "datetime2"),
+            (serde_json::json!(42), "datetimeoffset"),
+            (serde_json::json!(42), "varbinary(max)"),
+        ] {
+            assert!(
+                json_to_param(&value, x_sql_type).is_err(),
+                "{value} should not bind as {x_sql_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn datetimeoffset_applies_the_wire_offset_to_the_utc_clock_time() {
+        let date = tiberius::time::Date::new(0);
+        let ten_am_utc = tiberius::time::Time::new(10 * 60 * 60, 0);
+        let value = tiberius::time::DateTimeOffset::new(
+            tiberius::time::DateTime2::new(date, ten_am_utc),
+            120,
+        );
+
+        assert_eq!(
+            column_data_to_json(&ColumnData::DateTimeOffset(Some(value))),
+            serde_json::json!("0001-01-01T12:00:00+02:00")
+        );
+    }
+
+    #[test]
+    fn json_parameters_round_trip_through_tiberius_column_data() {
+        assert_eq!(
+            bound_value(serde_json::json!(true), "bit"),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            bound_value(serde_json::json!(255), "tinyint"),
+            serde_json::json!(255)
+        );
+        assert_eq!(
+            bound_value(serde_json::json!(-32_768), "smallint"),
+            serde_json::json!(-32_768)
+        );
+        assert_eq!(
+            bound_value(serde_json::json!(42), "int"),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            bound_value(serde_json::json!(9_000_000_000_i64), "bigint"),
+            serde_json::json!(9_000_000_000_i64)
+        );
+        assert_eq!(
+            bound_value(serde_json::json!("-123.45"), "decimal(18,2)"),
+            serde_json::json!("-123.45")
+        );
+        assert_eq!(
+            bound_value(
+                serde_json::json!("550e8400-e29b-41d4-a716-446655440000"),
+                "uniqueidentifier"
+            ),
+            serde_json::json!("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            bound_value(serde_json::json!("AQID"), "varbinary(max)"),
+            serde_json::json!("AQID")
+        );
+        assert_eq!(
+            bound_value(serde_json::json!("2026-07-18"), "date"),
+            serde_json::json!("2026-07-18")
+        );
+        assert_eq!(
+            bound_value(serde_json::json!("12:34:56.789"), "time(3)"),
+            serde_json::json!("12:34:56.789")
+        );
+        assert_eq!(
+            bound_value(serde_json::json!("2026-07-18T12:34:56.789"), "datetime2(3)"),
+            serde_json::json!("2026-07-18T12:34:56.789")
+        );
+        assert_eq!(
+            bound_value(
+                serde_json::json!("2026-07-18T12:34:56+02:00"),
+                "datetimeoffset(0)"
+            ),
+            serde_json::json!("2026-07-18T12:34:56+02:00")
+        );
+        assert_eq!(
+            bound_value(serde_json::Value::Null, "int"),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn decoded_sql_scalars_are_rendered_as_json() {
+        assert_eq!(
+            column_data_to_json(&ColumnData::U8(Some(7))),
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::I16(Some(-7))),
+            serde_json::json!(-7)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::I32(Some(-70_000))),
+            serde_json::json!(-70_000)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::I64(Some(9_000_000_000))),
+            serde_json::json!(9_000_000_000_i64)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::F32(Some(1.5))),
+            serde_json::json!(1.5)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::F64(Some(2.5))),
+            serde_json::json!(2.5)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::Bit(Some(false))),
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::Numeric(Some(Numeric::new_with_scale(
+                -12345, 2
+            )))),
+            serde_json::json!("-123.45")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::String(Some(Cow::Borrowed("hello")))),
+            serde_json::json!("hello")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::Binary(Some(Cow::Borrowed(&[1, 2, 3])))),
+            serde_json::json!("AQID")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::String(None)),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn decoded_sql_temporal_values_use_stable_iso_strings() {
+        assert_eq!(
+            column_data_to_json(&ColumnData::Date(Some(tiberius::time::Date::new(0)))),
+            serde_json::json!("0001-01-01")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::Time(Some(tiberius::time::Time::new(
+                45_296_789, 3
+            )))),
+            serde_json::json!("12:34:56.789")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::SmallDateTime(Some(
+                tiberius::time::SmallDateTime::new(0, 90)
+            ))),
+            serde_json::json!("1900-01-01T01:30:00")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::DateTime(Some(tiberius::time::DateTime::new(
+                0, 300
+            )))),
+            serde_json::json!("1900-01-01T00:00:01")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::DateTime2(Some(
+                tiberius::time::DateTime2::new(
+                    tiberius::time::Date::new(0),
+                    tiberius::time::Time::new(1, 0)
+                )
+            ))),
+            serde_json::json!("0001-01-01T00:00:01")
+        );
+        assert_eq!(
+            column_data_to_json(&ColumnData::Date(None)),
+            serde_json::Value::Null
+        );
     }
 }
