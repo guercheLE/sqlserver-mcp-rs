@@ -127,13 +127,40 @@ fn build_statement(
     kind: Option<&str>,
     params: &[Param],
     body: &Map<String, Value>,
+    database_override: Option<&str>,
 ) -> anyhow::Result<(String, Vec<Box<dyn ToSql>>)> {
-    let qualified = format!(
-        "{}.{}.{}",
-        quote_ident(db),
-        quote_ident(schema),
-        quote_ident(name)
-    );
+    // "sandbox" isn't a real database name a production instance is
+    // guaranteed to have -- it's the EDA pipeline's placeholder (see
+    // docs/sqlserver-eda-openapi-pipeline/README.md) for whatever database
+    // the TDS connection is already in (`sql_pool`/this fn's caller never
+    // sets an initial `database` on `tiberius::Config`, so that's always
+    // the login's server-configured default database, i.e. `db_name()`).
+    // Qualifying with a literal `[sandbox].` prefix would send every
+    // sandbox-database call at the wrong (nonexistent, or coincidentally
+    // named) database in any real deployment, so this two-part-qualifies
+    // instead by default and lets the connection's own current-database
+    // context resolve it -- unless the caller passed a top-level
+    // `database` argument (see `ApiClient::execute`), in which case that
+    // name replaces "sandbox" and the call goes out three-part qualified
+    // against the requested database instead. `master`/`msdb` are real,
+    // always-present system database names on every SQL Server instance,
+    // so those always stay three-part qualified and never take the
+    // override -- there's no ambiguity to resolve for them.
+    let qualified = match (db, database_override) {
+        ("sandbox", Some(requested_db)) => format!(
+            "{}.{}.{}",
+            quote_ident(requested_db),
+            quote_ident(schema),
+            quote_ident(name)
+        ),
+        ("sandbox", None) => format!("{}.{}", quote_ident(schema), quote_ident(name)),
+        (_, _) => format!(
+            "{}.{}.{}",
+            quote_ident(db),
+            quote_ident(schema),
+            quote_ident(name)
+        ),
+    };
 
     let mut bound: Vec<Box<dyn ToSql>> = Vec::with_capacity(params.len());
     for param in params {
@@ -227,6 +254,17 @@ impl ApiClient {
     /// server's own configured credentials -- there is no per-request
     /// credential override; SQL Server auth is always this server's own
     /// configured identity, not something a caller supplies per call.
+    ///
+    /// A top-level `database` string in `args` (a sibling of `body`, e.g.
+    /// `{"database": "reporting", "body": {...}}`) lets a caller target a
+    /// specific database for a `sandbox`-tagged operation, overriding the
+    /// connection's own current database (see `build_statement`'s doc
+    /// comment for why "sandbox" needs this at all). It's not part of the
+    /// generated/documented input schema -- mcpify's schema wrapper
+    /// doesn't set `additionalProperties: false`, so an extra key here
+    /// passes `validate_input` unnoticed -- and it's a no-op for
+    /// `master`/`msdb` operations, which are always sent against their
+    /// real, literal database regardless of this argument.
     pub async fn execute(
         &self,
         endpoint: &EndpointRecord,
@@ -254,6 +292,11 @@ impl ApiClient {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
+        let database_override = args_map
+            .get("database")
+            .and_then(Value::as_str)
+            .map(validate_ident)
+            .transpose()?;
 
         let (sql, bound) = build_statement(
             db,
@@ -262,6 +305,7 @@ impl ApiClient {
             endpoint.description.as_deref(),
             &params,
             &body,
+            database_override,
         )?;
 
         let auth_method = auth_manager.resolve_tds_auth().await?;
@@ -363,6 +407,7 @@ mod tests {
             Some("VIEW"),
             &[],
             &Map::new(),
+            None,
         )
         .unwrap();
         assert_eq!(sql, "SELECT * FROM [master].[INFORMATION_SCHEMA].[COLUMNS]");
@@ -393,6 +438,7 @@ mod tests {
             Some("SQL_STORED_PROCEDURE"),
             &params,
             &body,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -418,10 +464,58 @@ mod tests {
             Some("SQL_INLINE_TABLE_VALUED_FUNCTION"),
             &params,
             &body,
+            None,
         )
         .unwrap();
         assert_eq!(sql, "SELECT * FROM [master].[sys].[dm_exec_sql_text](@P1)");
         assert_eq!(bound.len(), 1);
+    }
+
+    #[test]
+    fn build_statement_omits_the_database_qualifier_for_sandbox_by_default() {
+        let (sql, bound) = build_statement(
+            "sandbox",
+            "dbo",
+            "widgets",
+            Some("VIEW"),
+            &[],
+            &Map::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(sql, "SELECT * FROM [dbo].[widgets]");
+        assert!(bound.is_empty());
+    }
+
+    #[test]
+    fn build_statement_replaces_sandbox_with_a_requested_database_override() {
+        let (sql, bound) = build_statement(
+            "sandbox",
+            "dbo",
+            "widgets",
+            Some("VIEW"),
+            &[],
+            &Map::new(),
+            Some("reporting"),
+        )
+        .unwrap();
+        assert_eq!(sql, "SELECT * FROM [reporting].[dbo].[widgets]");
+        assert!(bound.is_empty());
+    }
+
+    #[test]
+    fn build_statement_ignores_the_database_override_for_master_and_msdb() {
+        let (sql, _bound) = build_statement(
+            "master",
+            "sys",
+            "sp_who",
+            Some("SQL_STORED_PROCEDURE"),
+            &[],
+            &Map::new(),
+            Some("reporting"),
+        )
+        .unwrap();
+        assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
     }
 
     #[test]
@@ -433,6 +527,7 @@ mod tests {
             Some("SQL_STORED_PROCEDURE"),
             &[],
             &Map::new(),
+            None,
         )
         .unwrap();
         assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
@@ -471,6 +566,7 @@ mod tests {
                 Some("SQL_STORED_PROCEDURE"),
                 &params,
                 &Map::new(),
+                None,
             )
             .is_err()
         );
