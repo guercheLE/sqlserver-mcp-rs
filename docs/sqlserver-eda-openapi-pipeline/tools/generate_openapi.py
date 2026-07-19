@@ -235,13 +235,23 @@ CURATED_PARAMETERS = {
 def object_summary(name: str, type_desc: str) -> str:
     if name in SUMMARIES:
         return SUMMARIES[name]
+    # `name` is a real SQL Server identifier (e.g. "all_parameters") and
+    # must stay underscored everywhere else (operationId, dict keys) --
+    # but this summary text is exactly what gets embedded for semantic
+    # search (see services/embedding_service.rs), and fastembed's models
+    # are trained on natural English prose where words are space-separated.
+    # "all_parameters" as one underscore-joined token embeds worse against
+    # a query like "show me all parameters" than "all parameters" as two
+    # real words does, so only this human-readable rendering swaps
+    # underscores for spaces.
+    readable = name.replace("_", " ")
     if type_desc.startswith("SQL_STORED_PROCEDURE") or type_desc == "CLR_STORED_PROCEDURE":
-        return f"System stored procedure {name} (see Microsoft Learn for details)."
+        return f"System stored procedure {readable} (see Microsoft Learn for details)."
     if "TABLE_VALUED_FUNCTION" in type_desc or type_desc.endswith("_FUNCTION"):
-        return f"System function {name} (see Microsoft Learn for details)."
+        return f"System function {readable} (see Microsoft Learn for details)."
     if type_desc == "VIEW":
-        return f"System/catalog view {name} (see Microsoft Learn for details)."
-    return f"System object {name}."
+        return f"System/catalog view {readable} (see Microsoft Learn for details)."
+    return f"System object {readable}."
 
 
 # SQL Server types whose max_length is reported in bytes rather than
