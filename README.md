@@ -9,6 +9,10 @@ to a real TDS connection (via [`tiberius`](https://github.com/prisma/tiberius))
 instead of mcpify's default HTTP client, since these operations describe SQL
 objects, not HTTP endpoints.
 
+[![Sponsor](https://img.shields.io/github/sponsors/guerchele?label=Sponsor&logo=github&color=EA4AAA)](https://github.com/sponsors/guerchele)
+
+Building and maintaining this took real ideation, time, design effort, and compute (including LLM usage) to get right. If it's useful to you, consider [sponsoring its development](https://github.com/sponsors/guerchele) — any amount helps keep it going. 💛
+
 Exposes exactly 3 tools — `search`, `get`, `call` — backed by an embedded
 semantic database (`mcp_store.db`, one per SQL Server version — `versions`
 lists the ones this build knows about), so an LLM never needs the full
