@@ -30,11 +30,21 @@ pub const VERSION_STORE_FILES: &[(&str, &str)] = &[
     ("2017", "mcp_store_v2017.db"),
 ];
 
+// Every `.db` this crate supports, embedded into the compiled binary
+// itself via `include_bytes!` — mirrors how `validator.rs` already
+// embeds each version's schema, so this crate never needs its `.db`
+// files to exist anywhere on disk after `cargo install`. Each entry is
+// zstd-compressed (level 19), not the raw `.db` bytes: several real API
+// versions' worth of embeddings can push a package over crates.io's
+// 10MiB upload limit long before it's otherwise close, and compressing
+// buys back roughly 60-70% with no behavior change — `resolve_store_path`
+// below decompresses back to a real on-disk `.db` file before
+// `rusqlite::Connection::open` ever sees it.
 const VERSION_STORE_BYTES: &[(&str, &[u8])] = &[
-    ("2025", include_bytes!("../../mcp_store.db")),
-    ("2022", include_bytes!("../../mcp_store_v2022.db")),
-    ("2019", include_bytes!("../../mcp_store_v2019.db")),
-    ("2017", include_bytes!("../../mcp_store_v2017.db")),
+    ("2025", include_bytes!("../../mcp_store.db.zst")),
+    ("2022", include_bytes!("../../mcp_store_v2022.db.zst")),
+    ("2019", include_bytes!("../../mcp_store_v2019.db.zst")),
+    ("2017", include_bytes!("../../mcp_store_v2017.db.zst")),
 ];
 // mcpify:versions:end
 
@@ -87,13 +97,20 @@ pub fn resolve_store_path(api_version: &str) -> Result<PathBuf> {
     // the same directory is atomic on both POSIX and Windows, so every
     // reader sees either the complete previous copy or the complete new
     // one, never a partial write.
+    //
+    // `bytes` is the zstd-compressed `.db.zst` payload (see
+    // `VERSION_STORE_BYTES`), not a valid SQLite file itself — it must be
+    // decompressed before `rusqlite::Connection::open` can read it.
+    let decompressed = zstd::stream::decode_all(bytes).with_context(|| {
+        format!("failed to decompress embedded store data for api_version '{api_version}'")
+    })?;
     static UNIQUE: AtomicU64 = AtomicU64::new(0);
     let tmp_path = dir.join(format!(
         "{file}.{}.{}.tmp",
         std::process::id(),
         UNIQUE.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&tmp_path, bytes).with_context(|| {
+    std::fs::write(&tmp_path, decompressed).with_context(|| {
         format!(
             "failed to extract embedded store data to '{}'",
             tmp_path.display()

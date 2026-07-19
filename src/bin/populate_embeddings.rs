@@ -11,10 +11,74 @@
 // array string — `services::embedding_service`'s `search`-side query code
 // (Story R6) must encode/decode with this exact same byte layout.
 
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use sqlserver_mcp_catalog::data::store::{VERSION_STORE_FILES, open_store_read_write};
 use sqlserver_mcp_catalog::services::embedding_service::embed;
+
+/// Compression level for the `.db.zst` sibling this binary leaves behind —
+/// matches the level `store.rs`'s embedded `VERSION_STORE_BYTES` were
+/// produced with, so re-running this binary never silently regresses the
+/// published package size.
+const ZSTD_LEVEL: i32 = 19;
+
+/// Returns `path`'s zstd sibling, e.g. `mcp_store.db` -> `mcp_store.db.zst`.
+fn zst_sibling(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".zst");
+    PathBuf::from(name)
+}
+
+/// Ensures a real, uncompressed `.db` file exists at `path` for SQLite to
+/// open read-write: if only the `.db.zst` sibling exists (the normal state
+/// once a store has been compressed and committed), decompresses it into
+/// place first. If both somehow exist, the raw `.db` is left untouched and
+/// treated as the working copy — `.zst` is regenerated from it below.
+fn ensure_raw_db(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let zst_path = zst_sibling(path);
+    let compressed = std::fs::read(&zst_path).with_context(|| {
+        format!(
+            "neither '{}' nor '{}' exists",
+            path.display(),
+            zst_path.display()
+        )
+    })?;
+    let decompressed = zstd::stream::decode_all(compressed.as_slice())
+        .with_context(|| format!("failed to decompress '{}'", zst_path.display()))?;
+    std::fs::write(path, decompressed)
+        .with_context(|| format!("failed to write decompressed '{}'", path.display()))?;
+    Ok(())
+}
+
+/// Re-compresses the raw `.db` at `path` into its `.db.zst` sibling, then
+/// removes the raw file — the working copy this binary operates on must
+/// never linger on disk afterward (it would otherwise risk getting
+/// accidentally committed, and the raw file is exactly what pushes the
+/// published crate package over crates.io's 10MiB limit).
+fn recompress_and_remove_raw(path: &Path) -> anyhow::Result<()> {
+    let raw =
+        std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    let compressed = zstd::stream::encode_all(raw.as_slice(), ZSTD_LEVEL)
+        .with_context(|| format!("failed to zstd-compress '{}'", path.display()))?;
+    let zst_path = zst_sibling(path);
+    let mut file = File::create(&zst_path)
+        .with_context(|| format!("failed to create '{}'", zst_path.display()))?;
+    file.write_all(&compressed)
+        .with_context(|| format!("failed to write '{}'", zst_path.display()))?;
+    std::fs::remove_file(path).with_context(|| {
+        format!(
+            "failed to remove raw '{}' after recompressing",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
 
 struct EndpointRow {
     operation_id: String,
@@ -134,6 +198,11 @@ fn targets() -> Vec<PathBuf> {
 fn main() -> anyhow::Result<()> {
     let mut had_mismatch = false;
     for path in targets() {
+        // SQLite needs a real uncompressed file to write into — if only
+        // the `.db.zst` sibling is present (the normal committed state),
+        // decompress it into place first.
+        ensure_raw_db(&path)?;
+
         let count = populate_one(&path)?;
         println!(
             "populated embeddings for {count} operation(s) in '{}'",
@@ -151,6 +220,12 @@ fn main() -> anyhow::Result<()> {
                 missing.join(", ")
             );
         }
+
+        // On failure above, `?` already propagated and left the raw `.db`
+        // on disk (not recompressed) so it's available for inspection —
+        // only a fully processed path gets folded back into the `.db.zst`
+        // this binary must always end by leaving behind.
+        recompress_and_remove_raw(&path)?;
     }
     if had_mismatch {
         anyhow::bail!(
