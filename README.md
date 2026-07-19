@@ -2,10 +2,9 @@
 
 An MCP (Model Context Protocol) server exposing SQL Server's curated system
 stored procedures, functions, DMVs/DMFs, and catalog views (master/msdb/
-sandbox databases) across SQL Server 2017/2019/2022/2025 — scaffolded by
-[mcpify](https://github.com/guercheLE/mcpify) from a synthetic OpenAPI
-representation (see `docs/sqlserver-eda-openapi-pipeline/`), then hand-wired
-to a real TDS connection (via [`tiberius`](https://github.com/prisma/tiberius))
+sandbox databases) — scaffolded by [mcpify](https://github.com/guercheLE/mcpify)
+from a synthetic OpenAPI representation (see `docs/sqlserver-eda-openapi-pipeline/`),
+then hand-wired to a real TDS connection (via [`tiberius`](https://github.com/prisma/tiberius))
 instead of mcpify's default HTTP client, since these operations describe SQL
 objects, not HTTP endpoints.
 
@@ -14,9 +13,10 @@ objects, not HTTP endpoints.
 Building and maintaining this took real ideation, time, design effort, and compute (including LLM usage) to get right. If it's useful to you, consider [sponsoring its development](https://github.com/sponsors/guerchele) — any amount helps keep it going. 💛
 
 Exposes exactly 3 tools — `search`, `get`, `call` — backed by an embedded
-semantic database (`mcp_store.db`, one per SQL Server version — `versions`
-lists the ones this build knows about), so an LLM never needs the full
-catalog surface in context.
+semantic database (`mcp_store.db`, one per supported SQL Server version —
+2017, 2019, 2022, and 2025; run `versions` or see
+[`docs/SCHEMA_VERSIONS.md`](docs/SCHEMA_VERSIONS.md) for the full list),
+so an LLM never needs the full catalog surface in context.
 
 ## Install
 
