@@ -5,29 +5,26 @@
 // `embed()` from here, so the two are structurally guaranteed to share the
 // same model and vector space.
 //
-// `all-MiniLM-L6-v2` at its native 384 dimensions -- switched from mcpify's
-// originally-generated `all-mpnet-base-v2` (768-dim) purely to fit
-// crates.io's 10 MiB package-size limit: with 4 SQL Server versions each
-// embedding ~700-800 operations, 768-dim float32 vectors alone pushed the
-// packaged crate to ~10.0 MiB compressed (measured via `cargo package`),
-// right at the limit. Embedding vectors are close to incompressible
-// (unlike the relational/schema data, which compresses ~20x), so halving
-// the dimension was the single most effective lever -- it brought the
-// package to a comfortable ~7 MiB. The tradeoff is somewhat coarser
-// `search` tool relevance than the larger model would give; acceptable
-// here since queries are short technical phrases ("rename a table",
-// "current session's SQL text"), not long natural-language passages.
+// mcpify's originally-generated `all-mpnet-base-v2` at its native 768
+// dimensions -- also mcpify's own generator hard-code for the
+// `semantic_endpoints` vec0 table's column width (`mcpify/src/db/schema.rs`,
+// not something this project's source controls), so this module's model
+// and every `mcp_store*.db.zst` file mcpify produces always agree on
+// dimension with no extra resize step needed between a `mcpify sync` and
+// `populate_embeddings`.
 //
-// IMPORTANT: mcpify's own generator hard-codes the `semantic_endpoints`
-// vec0 table's column as `FLOAT[768]` (`mcpify/src/db/schema.rs`, not
-// something this project's source controls) -- every `mcp_store*.db` file
-// mcpify produces is born with a 768-dim column regardless of what this
-// module computes. Docs/sqlserver-eda-openapi-pipeline/scripts/
-// regenerate_mcp_server.sh's final step recreates that table at `FLOAT[384]`
-// in each store after every `mcpify sync`, before `populate_embeddings`
-// runs -- skipping that step means `populate_embeddings` will fail with a
-// sqlite-vec dimension-mismatch error (384-dim vectors don't fit a
-// 768-dim column), not silently write wrong data.
+// A smaller 384-dim model (`all-MiniLM-L6-v2`) was tried at one point to
+// fit crates.io's 10 MiB package-size limit, back when this project's
+// stores were committed uncompressed -- with 4 SQL Server versions each
+// embedding ~700-800 operations, 768-dim float32 vectors alone pushed the
+// packaged crate right to that limit. Since then the stores were switched
+// to zstd-compressed (level 19) `.db.zst` embeds (see src/data/store.rs),
+// and re-measuring `cargo package` at 768-dim against the current catalog
+// came back at 8.5 MiB compressed -- comfortably under the limit again
+// (embedding vectors themselves are close to incompressible, so the
+// compression gain comes from the surrounding relational/schema data, not
+// the vectors) -- so the switch back to the full 768-dim model for better
+// `search` tool relevance was safe to make permanent.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -41,13 +38,13 @@ fn model() -> &'static Mutex<TextEmbedding> {
         // unrecoverable-startup-error handling: nothing useful can happen
         // if the model can't be fetched/loaded.
         Mutex::new(
-            TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::AllMiniLML6V2))
-                .expect("failed to load the all-MiniLM-L6-v2 embedding model"),
+            TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::AllMpnetBaseV2))
+                .expect("failed to load the all-mpnet-base-v2 embedding model"),
         )
     })
 }
 
-/// Computes a 384-dim embedding vector for `text`, mean-pooled and
+/// Computes a 768-dim embedding vector for `text`, mean-pooled and
 /// normalized (fastembed's default behavior for this model, replicating
 /// the sentence-transformers reference implementation).
 pub fn embed(text: &str) -> anyhow::Result<Vec<f32>> {

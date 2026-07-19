@@ -39,10 +39,6 @@ path = "src/bin/populate_embeddings.rs"
 name = "sqlserver-mcp-healthcheck"
 path = "src/bin/healthcheck.rs"
 
-[[bin]]
-name = "sqlserver-mcp-resize-embeddings"
-path = "src/bin/resize_embeddings.rs"
-
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"

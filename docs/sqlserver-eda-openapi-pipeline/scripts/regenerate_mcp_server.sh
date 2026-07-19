@@ -17,18 +17,17 @@
 # Then, once, from the repo root:
 #   4. `mcpify sync --manifest mcpify.yaml`
 #      -- regenerates the Rust project's mcpify-managed scaffolding
-#         (mcp_store*.db, src/validation/generated_schemas*.json.zst, and
-#         the marker-delimited "version-aware" regions in a handful of
+#         (mcp_store*.db.zst, src/validation/generated_schemas*.json.zst,
+#         and the marker-delimited "version-aware" regions in a handful of
 #         source files) from the four merged specs.
-#   5. the `resize-embeddings` binary
-#      -- mcpify's generator hard-codes `semantic_endpoints` as
-#         `FLOAT[768]` (see src/services/embedding_service.rs's doc
-#         comment) -- every `mcpify sync` re-creates that 768-dim column,
-#         so it has to be patched back to this project's actual model
-#         dimension (384) before embeddings are (re)computed.
-#   6. the `populate-embeddings` binary (`--all`)
-#      -- refills `semantic_endpoints` for every version (steps 4-5 both
-#         leave it empty), or `search` returns nothing.
+#   5. the `populate-embeddings` binary (`--all`)
+#      -- refills `semantic_endpoints` for every version (mcpify's
+#         generator leaves it empty). No resize step needed first: mcpify
+#         hard-codes that table as `FLOAT[768]`, which matches this
+#         project's own model (see src/services/embedding_service.rs's doc
+#         comment) -- the two haven't diverged since the 768-dim package
+#         size was re-measured post-zstd-compression and found to fit
+#         crates.io's limit with headroom.
 #
 # IMPORTANT: `mcpify sync` fully regenerates several files from its Tera
 # templates (observed directly: it overwrote hand-edited
@@ -84,16 +83,11 @@ mcpify sync --manifest mcpify.yaml
 cat <<'EOF'
 
 == mcpify sync done -- STOP AND RE-APPLY HAND-EDITS BEFORE CONTINUING ==
-mcpify sync may have just reverted src/services/embedding_service.rs (the
-resize/populate steps below depend on it declaring the *current* model --
-running them against a reverted embedding_service.rs would silently
-re-populate 768-dim vectors into a table this script is about to size for
-384-dim, or worse, a dimension mismatch error) and any other hand-edited
-file (see this script's header comment for the full list). Re-apply those,
-`cargo build --all-targets && cargo test` to confirm, THEN run:
+mcpify sync may have just reverted src/services/embedding_service.rs and
+any other hand-edited file (see this script's header comment for the full
+list). Re-apply those, `cargo build --all-targets && cargo test` to
+confirm, THEN run:
 
-  cargo build --release --bin sqlserver-mcp-resize-embeddings
-  ./target/release/sqlserver-mcp-resize-embeddings
   cargo build --release --bin sqlserver-mcp-populate-embeddings
   ./target/release/sqlserver-mcp-populate-embeddings --all
 EOF
