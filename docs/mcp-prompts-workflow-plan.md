@@ -207,11 +207,45 @@ These are targets to keep content proportional and reviewable, not hard limits e
   - **`src/prompts/mod.rs`**'s own `#[cfg(test)] mod tests` — pure unit tests for `render_context_header` covering: empty slice, all-supplied, all-missing, mixed. Pure logic, no server construction needed.
 - Manual smoke check: `cargo run -- start` (stdio) with an MCP-capable client that supports `prompts/list`/`prompts/get`, to confirm the master → sql-agent-jobs cross-reference reads naturally to a real calling LLM, not just structurally valid per the automated tests.
 
+## Addendum: linked-server fix, two new workflows, and a diagnostics expansion
+
+**Context.** After the initial 7-prompt release (`v0.3.0`), the user manually tested the workflows and asked for a review of the full ~800-row operation catalog to find gaps. That review, cross-checked against all four supported version stores (`mcp_store.db.zst` = 2025, `_v2022`, `_v2019`, `_v2017` — decompressed and queried directly with `sqlite3`/`zstd`), turned up one bug and two workflow-shaped gaps:
+
+- **Bug**: `server_administration.md` tells the calling LLM to "search for linked-server operations (add/drop/list)," but `sp_droplinkedserver` is not in the catalog — confirmed absent (`0` rows) in **all four** versions. Only `sp_addlinkedserver` and `sp_linkedservers` (list) actually exist. The line needs correcting, not just left to fail gracefully via the agnostic-search fallback.
+- **Gap 1 — blocking/locks** is currently one thin bullet inside `performance_diagnostics.md`, but the underlying operations support a genuine order-dependent flow: find the blocking chain, walk it to the head blocker, inspect its last statement, then *decide* whether to kill it — a destructive action that deserves the same explicit confirmation gate `security_provisioning`/`sql_agent_jobs` already use for mutations.
+- **Gap 2 — index tuning recommendations**: `master_sys_sp_executesql`'s own catalog summary reads "Execute a Transact-SQL statement or batch with parameterized substitution" — confirmed present in all four versions. This is a genuine escape hatch to arbitrary T-SQL (including DDL), not just a curated read. Paired with the `dm_db_missing_index_*` family (candidate indexes ranked by estimated improvement) and `dm_db_tuning_recommendations` (SQL Server's own automatic recommendations), there's a complete, real workflow here that no existing prompt covers: find candidates → rank → cross-check for overlap → build and execute `CREATE INDEX` → verify. This is the first prompt that reaches into DDL rather than the curated named procs, so it needs its own confirmation gate before executing anything.
+
+**Version-drift evidence (why "be agnostic" isn't just the existing boilerplate rule here — these are confirmed, not hypothetical):**
+
+| Operation | 2025 | 2022 | 2019 | 2017 |
+|---|:-:|:-:|:-:|:-:|
+| `sp_droplinkedserver` | ✗ | ✗ | ✗ | ✗ |
+| `sp_addlinkedserver` / `sp_linkedservers` | ✓ | ✓ | ✓ | ✓ |
+| `sp_executesql` | ✓ | ✓ | ✓ | ✓ |
+| `dm_exec_requests`/`sessions`/`connections`/`input_buffer`/`sql_text`, `dm_tran_locks`, `dm_os_waiting_tasks`, `sp_who`/`sp_who2`/`sp_lock` | ✓ | ✓ | ✓ | ✓ |
+| `dm_db_missing_index_details`/`_group_stats`/`_columns`/`_groups` | ✓ | ✓ | ✓ | ✓ |
+| `dm_db_missing_index_group_stats_query` | ✓ | ✓ | ✓ | **✗** |
+| `dm_db_tuning_recommendations` (public, automatic-tuning recommendations) | ✓ | ✓ | ✓ | ✓ |
+| `dm_db_internal_auto_tuning_*` (5 objects: create-index-recommendations, recommendation metrics/impact, workflows, version) | ✓ | **✗** | **✗** | **✗** |
+| `dm_os_memory_health_history` | ✓ | **✗** | **✗** | **✗** |
+| `dm_db_xtp_*`, `dm_db_column_store_*` (columnstore/In-Memory OLTP families), `dm_os_ring_buffers`, `dm_os_sys_info` | ✓ | ✓ | ✓ | ✓ |
+
+So: the blocking/locks workflow's entire operation set is safe to reference generally (present in all 4). The index-tuning workflow's core (`dm_db_missing_index_*`, `dm_db_tuning_recommendations`, `sp_executesql`) is safe too, but `dm_db_missing_index_group_stats_query` must be phrased as "if available" with a described fallback (recompute the same ranking from `_group_stats` + `_details` directly), and the `dm_db_internal_auto_tuning_*` family must be phrased as an optional deeper-dive, never a required step, since it's 2025-only. The `performance_diagnostics.md` expansion follows the same rule for `dm_os_memory_health_history`.
+
+**Design additions** (same conventions as the original 7 prompts — separate `content/*.md` via `include_str!`, `Option<String>` args, agnostic search-then-read-schema phrasing throughout, no hardcoded `operationId`):
+
+- `sqlserver_workflow_blocking_and_locks` — args: none (this is a live-diagnosis flow, not parameterized ahead of time). Steps: (1) list current blocking chains, (2) identify the head blocker per chain, (3) inspect its last statement, (4) summarize for the user, (5) **only if the user explicitly confirms**, search for how to terminate a session (`sp_executesql` running `KILL`) and re-verify the chain cleared. Composes with `sqlserver_workflow_performance_diagnostics` (which now just points here for the blocking symptom) and `sqlserver_workflow_server_administration` (for `sp_who`/`sp_who2` as a lighter-weight session overview).
+- `sqlserver_workflow_index_tuning_recommendations` — args: `database`, `schema`, `table` (all `Option<String>`, same shape as `indexes_constraints`). Steps: (1) gather scope, (2) search for missing-index candidates ranked by estimated improvement (with the `_group_stats_query` fallback noted above), (3) get the exact key/included columns for a chosen candidate, (4) cross-check against `sqlserver_workflow_indexes_constraints` for an existing/overlapping index before proceeding, (5) **explicit confirmation gate** — present the exact `CREATE INDEX` statement to the user and get a yes before executing anything, (6) execute via `sp_executesql`, (7) verify the new index exists via an index lookup. Also mentions `dm_db_tuning_recommendations` (and, as an optional 2025-only deeper dive, `dm_db_internal_auto_tuning_*`) as SQL Server's own automatic-recommendation source, complementary to the manual missing-index search.
+- `performance_diagnostics.md` — replace the existing one-line "blocking" bullet with a pointer to the new dedicated workflow; add two new bullets for symptom families not currently mentioned at all: In-Memory OLTP/columnstore health (`dm_db_xtp_*`/`dm_db_column_store_*`) and OS/hardware-level pressure (`dm_os_sys_info`, `dm_os_ring_buffers`, and — phrased as version-dependent — `dm_os_memory_health_history`).
+- `master.md` — add both new prompts to the menu table (9 prompts total now: master + 8 sub-workflows).
+- `router.rs` tests — extend the existing `prompt_router_registers_every_prompt_name` set to 9 names; add the same shape of argument/content assertions used for `sql_agent_jobs`/`security_provisioning` to the two new prompts.
+
 ## Release (once implementation is complete and `cargo test` passes)
 
-This repo's existing convention, confirmed from git history and `.github/workflows/release.yml`: releases are tag-driven (cargo-dist's build/publish job fires on a version-like tag push; no separate version-bump automation script exists in `scripts/`), and every past release follows the same two-commit-then-tag shape (e.g. `chore(release): bump version to 0.2.2`). Follow it exactly, only once implementation is complete and `cargo test` is green:
+This repo's existing convention, confirmed from git history and `.github/workflows/release.yml`: releases are tag-driven (cargo-dist's build/publish job fires on a version-like tag push; no separate version-bump automation script exists in `scripts/`), and every past release follows the same two-commit-then-tag shape (e.g. `chore(release): bump version to 0.2.2`). For this round, the user asked for the plan doc to land in its **own** commit, separate from the implementation (unlike the previous round, which bundled them):
 
-1. `git commit` the implementation changes (including `docs/mcp-prompts-workflow-plan.md`) with a conventional-commit message (e.g. `feat(prompts): add guided SQL Server workflow prompts` — confirm the exact `type(scope)` against this repo's actual recent history at commit time).
-2. Bump `version` in `Cargo.toml` (and let `Cargo.lock` follow via `cargo check`/`cargo build`), commit as `chore(release): bump version to X.Y.Z` — matching every prior release commit's exact message shape. Current version is `0.2.2`; default to `0.2.3` unless the implementation commit's conventional-commit type argues for a minor bump instead — use judgment at execution time, don't hardcode this without checking what actually landed.
-3. `git tag vX.Y.Z` on that bump commit.
-4. `git push` the branch, then `git push --tags` (or `git push origin vX.Y.Z`) — confirm with the user before pushing, per the standing rule that pushes and tag creation are confirmed, not assumed.
+1. `git commit` the implementation changes (this addendum's code, not the plan doc) with a conventional-commit message (e.g. `feat(prompts): add blocking/locks and index-tuning workflows` — confirm the exact `type(scope)` against this repo's actual recent history at commit time).
+2. `git commit` `docs/mcp-prompts-workflow-plan.md` on its own, as a `docs:`-typed commit.
+3. Bump `version` in `Cargo.toml` (and let `Cargo.lock` follow via `cargo check`/`cargo build`), commit as `chore(release): bump version to X.Y.Z` — matching every prior release commit's exact message shape. Current version is `0.3.0`; this repo bumps minor for a `feat` commit (confirmed precedent: `0.1.4` → `0.2.0` for a `feat(embeddings)` commit, and this project's own `0.2.2` → `0.3.0` for `feat(prompts)`), so default to `0.4.0` unless the actual landed commit type argues otherwise — check at execution time.
+4. `git tag vX.Y.Z` on that bump commit.
+5. `git push` the branch, then `git push --tags` (or `git push origin vX.Y.Z`).
