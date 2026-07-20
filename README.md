@@ -18,6 +18,36 @@ semantic database (`mcp_store.db`, one per supported SQL Server version —
 [`docs/SCHEMA_VERSIONS.md`](docs/SCHEMA_VERSIONS.md) for the full list),
 so an LLM never needs the full catalog surface in context.
 
+## Guided workflows (MCP prompts)
+
+Beyond the 3 tools, the server also exposes MCP **prompts** — guided,
+multi-step instructions for common SQL Server operational tasks, so a
+calling LLM doesn't have to re-derive the right order of `search`/`get`/`call`
+calls, the gotchas, and the verification steps from scratch every session.
+Start with `sqlserver_workflow`, a master menu that routes to the right
+sub-workflow below (and delegates the whole thing to an isolated sub-task, if
+your MCP client supports one, to keep the tool-call trace out of the main
+conversation):
+
+| Prompt | Covers |
+|---|---|
+| `sqlserver_workflow_schema_exploration` | Databases/schemas/tables/views/columns/types/triggers |
+| `sqlserver_workflow_indexes_constraints` | Indexes, foreign keys, check constraints, compression estimates |
+| `sqlserver_workflow_security_provisioning` | Login/user/role provisioning |
+| `sqlserver_workflow_sql_agent_jobs` | SQL Agent job/step/schedule setup |
+| `sqlserver_workflow_server_administration` | Server/database config, renaming, disk usage, linked servers |
+| `sqlserver_workflow_performance_diagnostics` | Wait stats, query plans, transactions, I/O, resource governor, In-Memory OLTP/columnstore health, OS-level pressure |
+| `sqlserver_workflow_blocking_and_locks` | Diagnosing a blocking chain, and — only with explicit confirmation — killing the blocking session |
+| `sqlserver_workflow_index_tuning_recommendations` | Finding missing-index candidates and, only with explicit confirmation, creating the index |
+
+Every prompt is phrased to search for the operation it needs rather than
+naming an `operationId` directly, since object availability can differ
+across the four supported engine versions. Prompts that can mutate anything
+(SQL Agent jobs, security, killing a session, creating an index) require the
+calling LLM to get explicit user confirmation before acting. See
+[`docs/mcp-prompts-workflow-plan.md`](docs/mcp-prompts-workflow-plan.md) for
+the full design rationale.
+
 ## Install
 
 ```bash
