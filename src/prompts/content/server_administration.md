@@ -38,6 +38,6 @@ differ across the four supported engine versions (2017/2019/2022/2025).
 
 ## Composing with other workflows
 
-Login/role/permission changes belong to `sqlserver_workflow_security_provisioning`;
-SQL Agent job/schedule management belongs to `sqlserver_workflow_sql_agent_jobs`
+Login/role/permission changes belong to `sqlserver-security-provisioning`;
+SQL Agent job/schedule management belongs to `sqlserver-sql-agent-jobs`
 — fetch those prompts rather than duplicating their guidance here.

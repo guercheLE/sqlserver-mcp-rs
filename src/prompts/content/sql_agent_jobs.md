@@ -1,7 +1,7 @@
 # Guided workflow: SQL Agent job scheduling
 
 This sub-workflow is designed to be run as an isolated sub-task where
-possible — if you were delegated here from `sqlserver_workflow`'s routing, or
+possible — if you were delegated here from `sqlserver`'s routing, or
 your environment otherwise supports running this as its own sub-task,
 everything you need is in this prompt's own text plus the parameters already
 listed above; report back only a short summary when done rather than the full
@@ -69,5 +69,5 @@ operations) rather than leaving it scheduled.
 ## Composing with other workflows
 
 If a job step's command references a specific database/table and you're not
-sure it exists, fetch `sqlserver_workflow_schema_exploration` for how to
+sure it exists, fetch `sqlserver-schema-exploration` for how to
 verify that rather than duplicating its guidance here.

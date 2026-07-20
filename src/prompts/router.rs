@@ -18,7 +18,7 @@ use crate::prompts::{
 #[prompt_router(vis = "pub(crate)")]
 impl McpifyServer {
     #[prompt(
-        name = "sqlserver_workflow",
+        name = "sqlserver",
         description = "Start here. Presents the available SQL Server operational \
                         workflows, routes to the right guided sub-workflow based on \
                         the user's goal, and — where the environment supports it — \
@@ -37,7 +37,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_sql_agent_jobs",
+        name = "sqlserver-sql-agent-jobs",
         description = "Guided SQL Agent job setup: create a job, add one or more \
                         steps, attach a schedule, and start it — each step gated on \
                         the previous one being confirmed to exist, with cleanup \
@@ -58,7 +58,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_schema_exploration",
+        name = "sqlserver-schema-exploration",
         description = "Discover databases/schemas/tables/views/columns/types/triggers, \
                         either via `sys.*` catalog views or `INFORMATION_SCHEMA.*`."
     )]
@@ -70,7 +70,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_indexes_constraints",
+        name = "sqlserver-indexes-constraints",
         description = "Inspect indexes, index columns, foreign keys, and check \
                         constraints on a table; estimate compression savings."
     )]
@@ -93,7 +93,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_security_provisioning",
+        name = "sqlserver-security-provisioning",
         description = "Guided login/user/role provisioning, including the \
                         built-in-vs-custom-role fork and the new-login-vs-existing-login fork."
     )]
@@ -116,7 +116,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_server_administration",
+        name = "sqlserver-server-administration",
         description = "Server/database config, renaming objects, disk-space usage, \
                         dependency lookup, bulk per-table/per-db operations, linked servers."
     )]
@@ -128,7 +128,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_performance_diagnostics",
+        name = "sqlserver-performance-diagnostics",
         description = "Thin pointer to the right read-only signal (wait stats, query plans, \
                         transactions, resource governor, I/O, In-Memory OLTP/columnstore \
                         health, OS-level pressure)."
@@ -141,7 +141,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_blocking_and_locks",
+        name = "sqlserver-blocking-and-locks",
         description = "Diagnose a blocking chain down to its head blocker and last \
                         statement, then — only with explicit user confirmation — \
                         terminate the blocking session and verify the chain cleared."
@@ -154,7 +154,7 @@ impl McpifyServer {
     }
 
     #[prompt(
-        name = "sqlserver_workflow_index_tuning_recommendations",
+        name = "sqlserver-index-tuning-recommendations",
         description = "Find missing-index candidates ranked by estimated improvement, \
                         cross-check for overlap with existing indexes, and — only with \
                         explicit user confirmation — create and verify the index."
@@ -214,15 +214,15 @@ mod tests {
         assert_eq!(
             names,
             std::collections::BTreeSet::from([
-                "sqlserver_workflow",
-                "sqlserver_workflow_sql_agent_jobs",
-                "sqlserver_workflow_schema_exploration",
-                "sqlserver_workflow_indexes_constraints",
-                "sqlserver_workflow_security_provisioning",
-                "sqlserver_workflow_server_administration",
-                "sqlserver_workflow_performance_diagnostics",
-                "sqlserver_workflow_blocking_and_locks",
-                "sqlserver_workflow_index_tuning_recommendations",
+                "sqlserver",
+                "sqlserver-sql-agent-jobs",
+                "sqlserver-schema-exploration",
+                "sqlserver-indexes-constraints",
+                "sqlserver-security-provisioning",
+                "sqlserver-server-administration",
+                "sqlserver-performance-diagnostics",
+                "sqlserver-blocking-and-locks",
+                "sqlserver-index-tuning-recommendations",
             ])
         );
     }
@@ -232,8 +232,8 @@ mod tests {
         let prompts = McpifyServer::prompt_router().list_all();
         let security = prompts
             .iter()
-            .find(|p| p.name == "sqlserver_workflow_security_provisioning")
-            .expect("sqlserver_workflow_security_provisioning is registered");
+            .find(|p| p.name == "sqlserver-security-provisioning")
+            .expect("sqlserver-security-provisioning is registered");
         let arguments = security
             .arguments
             .as_ref()
@@ -260,7 +260,7 @@ mod tests {
             .sqlserver_workflow_prompt(Parameters(MasterWorkflowArgs { goal: None }))
             .await;
         let text = &messages[0].content.as_text().unwrap().text;
-        assert!(text.contains("sqlserver_workflow_sql_agent_jobs"));
+        assert!(text.contains("sqlserver-sql-agent-jobs"));
     }
 
     #[tokio::test]
@@ -311,7 +311,7 @@ mod tests {
             .sqlserver_workflow_performance_diagnostics_prompt()
             .await;
         let text = &messages[0].content.as_text().unwrap().text;
-        assert!(text.contains("sqlserver_workflow_blocking_and_locks"));
-        assert!(text.contains("sqlserver_workflow_index_tuning_recommendations"));
+        assert!(text.contains("sqlserver-blocking-and-locks"));
+        assert!(text.contains("sqlserver-index-tuning-recommendations"));
     }
 }

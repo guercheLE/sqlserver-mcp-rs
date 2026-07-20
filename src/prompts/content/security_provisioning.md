@@ -1,7 +1,7 @@
 # Guided workflow: login/user/role provisioning
 
 This sub-workflow is designed to be run as an isolated sub-task where
-possible — if you were delegated here from `sqlserver_workflow`'s routing, or
+possible — if you were delegated here from `sqlserver`'s routing, or
 your environment otherwise supports running this as its own sub-task,
 everything you need is in this prompt's own text plus the parameters already
 listed above; report back only a short summary when done rather than the
@@ -64,5 +64,5 @@ actually listed as a member of the target role in the target database.
 ## Composing with other workflows
 
 If you need to confirm the database itself exists before granting access to
-it, fetch `sqlserver_workflow_schema_exploration` rather than duplicating its
+it, fetch `sqlserver-schema-exploration` rather than duplicating its
 guidance here.

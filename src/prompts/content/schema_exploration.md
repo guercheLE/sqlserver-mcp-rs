@@ -41,5 +41,5 @@ inventory question.
 ## Composing with other workflows
 
 Indexes, foreign keys, and check constraints on a specific table are covered
-in more depth by `sqlserver_workflow_indexes_constraints` — fetch that prompt
+in more depth by `sqlserver-indexes-constraints` — fetch that prompt
 rather than duplicating its guidance here.

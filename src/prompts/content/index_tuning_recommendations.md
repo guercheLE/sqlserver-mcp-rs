@@ -1,7 +1,7 @@
 # Guided workflow: index tuning recommendations
 
 This sub-workflow is designed to be run as an isolated sub-task where
-possible — if you were delegated here from `sqlserver_workflow`'s routing, or
+possible — if you were delegated here from `sqlserver`'s routing, or
 your environment otherwise supports running this as its own sub-task,
 everything you need is in this prompt's own text plus the parameters already
 listed above; report back only a short summary when done rather than the
@@ -48,7 +48,7 @@ exact columns and order needed to define the index.
 
 ## Step 3 — check for an existing or overlapping index
 
-Gated on Step 2. Fetch `sqlserver_workflow_indexes_constraints` (or directly
+Gated on Step 2. Fetch `sqlserver-indexes-constraints` (or directly
 search for an index listing on the same table) and confirm no existing index
 already covers this — creating a redundant or near-duplicate index wastes
 write overhead for no benefit. Don't skip this just because a DMV recommends
@@ -75,7 +75,7 @@ triggered the recommendation runs again.
 
 ## Composing with other workflows
 
-Table/column discovery belongs to `sqlserver_workflow_schema_exploration`;
+Table/column discovery belongs to `sqlserver-schema-exploration`;
 the read-only side of index inspection (without the tuning-recommendation
-angle) belongs to `sqlserver_workflow_indexes_constraints` — fetch those
+angle) belongs to `sqlserver-indexes-constraints` — fetch those
 prompts rather than duplicating their guidance here.

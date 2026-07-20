@@ -33,5 +33,5 @@ supported engine versions (2017/2019/2022/2025).
 ## Composing with other workflows
 
 Whether the table itself exists, and what columns it has, is covered by
-`sqlserver_workflow_schema_exploration` — fetch that prompt rather than
+`sqlserver-schema-exploration` — fetch that prompt rather than
 duplicating its guidance here.

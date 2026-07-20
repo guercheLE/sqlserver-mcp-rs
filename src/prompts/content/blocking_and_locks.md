@@ -1,7 +1,7 @@
 # Guided workflow: diagnosing and resolving blocking
 
 This sub-workflow is designed to be run as an isolated sub-task where
-possible — if you were delegated here from `sqlserver_workflow`'s routing, or
+possible — if you were delegated here from `sqlserver`'s routing, or
 your environment otherwise supports running this as its own sub-task,
 everything you need is in this prompt's own text; report back only a short
 summary when done rather than the full step-by-step trace.
@@ -57,7 +57,7 @@ success just because the call didn't error.
 ## Composing with other workflows
 
 For a lighter-weight "who's connected right now" overview without a full
-blocking investigation, `sqlserver_workflow_performance_diagnostics` points
+blocking investigation, `sqlserver-performance-diagnostics` points
 at `sp_who`/`sp_who2`. If the underlying cause looks like a missing index
 making a query hold locks longer than necessary, fetch
-`sqlserver_workflow_index_tuning_recommendations`.
+`sqlserver-index-tuning-recommendations`.

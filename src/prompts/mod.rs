@@ -57,7 +57,7 @@ pub struct SecurityProvisioningArgs {
 /// to a prompt's static markdown body so its numbered steps don't need to
 /// re-ask for parameters the caller already supplied. Returns an empty
 /// string for a prompt with no arguments at all, so the header adds nothing
-/// to prompts like `sqlserver_workflow_performance_diagnostics`.
+/// to prompts like `sqlserver-workflow-performance-diagnostics`.
 pub(crate) fn render_context_header(fields: &[(&str, Option<&str>)]) -> String {
     if fields.is_empty() {
         return String::new();

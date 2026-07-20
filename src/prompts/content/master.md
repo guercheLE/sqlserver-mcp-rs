@@ -10,14 +10,14 @@ right order of calls, the gotchas, and the verification steps from scratch.
 
 | Prompt | Use when the goal is... |
 |---|---|
-| `sqlserver_workflow_schema_exploration` | Discovering what databases/schemas/tables/views/columns exist |
-| `sqlserver_workflow_indexes_constraints` | Inspecting a table's indexes, foreign keys, or check constraints |
-| `sqlserver_workflow_security_provisioning` | Creating a login, granting database access, or managing role membership |
-| `sqlserver_workflow_sql_agent_jobs` | Scheduling or managing a SQL Agent job |
-| `sqlserver_workflow_server_administration` | Server/database config, renaming objects, disk usage, linked servers |
-| `sqlserver_workflow_performance_diagnostics` | Diagnosing high CPU, slow queries, I/O, or resource limits |
-| `sqlserver_workflow_blocking_and_locks` | Diagnosing a blocked/stuck query, and — only with explicit confirmation — killing the session causing it |
-| `sqlserver_workflow_index_tuning_recommendations` | Finding and, with explicit confirmation, creating a missing index |
+| `sqlserver-schema-exploration` | Discovering what databases/schemas/tables/views/columns exist |
+| `sqlserver-indexes-constraints` | Inspecting a table's indexes, foreign keys, or check constraints |
+| `sqlserver-security-provisioning` | Creating a login, granting database access, or managing role membership |
+| `sqlserver-sql-agent-jobs` | Scheduling or managing a SQL Agent job |
+| `sqlserver-server-administration` | Server/database config, renaming objects, disk usage, linked servers |
+| `sqlserver-performance-diagnostics` | Diagnosing high CPU, slow queries, I/O, or resource limits |
+| `sqlserver-blocking-and-locks` | Diagnosing a blocked/stuck query, and — only with explicit confirmation — killing the session causing it |
+| `sqlserver-index-tuning-recommendations` | Finding and, with explicit confirmation, creating a missing index |
 
 ## Routing
 
