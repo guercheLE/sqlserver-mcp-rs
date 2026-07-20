@@ -28,7 +28,13 @@ differ across the four supported engine versions (2017/2019/2022/2025).
   tables/databases match) with the user before calling, especially for
   anything destructive.
 - "How do I connect to another SQL Server instance from this one?" → search
-  for linked-server operations (add/drop/list).
+  for linked-server operations. Only add and list are available as named
+  operations in this catalog — there is no dedicated drop operation.
+  Removing a linked server needs a raw `DROP SERVER` statement executed via
+  `sp_executesql` (search for it — it accepts an arbitrary T-SQL batch, so
+  it's the general escape hatch whenever a named operation doesn't exist).
+  **Confirm the exact statement with the user before executing anything
+  through it** — it isn't limited to reads.
 
 ## Composing with other workflows
 

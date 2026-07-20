@@ -33,6 +33,16 @@ pub struct IndexesConstraintsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IndexTuningRecommendationsArgs {
+    /// Database to search for missing-index candidates in
+    pub database: Option<String>,
+    /// Schema containing the table to focus on (e.g. "dbo")
+    pub schema: Option<String>,
+    /// Table to focus the missing-index search on
+    pub table: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SecurityProvisioningArgs {
     /// SQL Server login to create or grant access with
     pub login_name: Option<String>,

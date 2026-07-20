@@ -11,8 +11,8 @@ use rmcp::{prompt, prompt_router};
 
 use crate::core::mcp_server::McpifyServer;
 use crate::prompts::{
-    IndexesConstraintsArgs, MasterWorkflowArgs, SecurityProvisioningArgs, SqlAgentJobsArgs,
-    render_context_header,
+    IndexTuningRecommendationsArgs, IndexesConstraintsArgs, MasterWorkflowArgs,
+    SecurityProvisioningArgs, SqlAgentJobsArgs, render_context_header,
 };
 
 #[prompt_router(vis = "pub(crate)")]
@@ -129,13 +129,51 @@ impl McpifyServer {
 
     #[prompt(
         name = "sqlserver_workflow_performance_diagnostics",
-        description = "Thin pointer to the right read-only signal (active requests/sessions, \
-                        wait stats, blocking/locks, transactions, resource governor, I/O)."
+        description = "Thin pointer to the right read-only signal (wait stats, query plans, \
+                        transactions, resource governor, I/O, In-Memory OLTP/columnstore \
+                        health, OS-level pressure)."
     )]
     async fn sqlserver_workflow_performance_diagnostics_prompt(&self) -> Vec<PromptMessage> {
         vec![PromptMessage::new_text(
             Role::User,
             include_str!("content/performance_diagnostics.md"),
+        )]
+    }
+
+    #[prompt(
+        name = "sqlserver_workflow_blocking_and_locks",
+        description = "Diagnose a blocking chain down to its head blocker and last \
+                        statement, then — only with explicit user confirmation — \
+                        terminate the blocking session and verify the chain cleared."
+    )]
+    async fn sqlserver_workflow_blocking_and_locks_prompt(&self) -> Vec<PromptMessage> {
+        vec![PromptMessage::new_text(
+            Role::User,
+            include_str!("content/blocking_and_locks.md"),
+        )]
+    }
+
+    #[prompt(
+        name = "sqlserver_workflow_index_tuning_recommendations",
+        description = "Find missing-index candidates ranked by estimated improvement, \
+                        cross-check for overlap with existing indexes, and — only with \
+                        explicit user confirmation — create and verify the index."
+    )]
+    async fn sqlserver_workflow_index_tuning_recommendations_prompt(
+        &self,
+        Parameters(args): Parameters<IndexTuningRecommendationsArgs>,
+    ) -> Vec<PromptMessage> {
+        let header = render_context_header(&[
+            ("database", args.database.as_deref()),
+            ("schema", args.schema.as_deref()),
+            ("table", args.table.as_deref()),
+        ]);
+        vec![PromptMessage::new_text(
+            Role::User,
+            format!(
+                "{header}\n{}",
+                include_str!("content/index_tuning_recommendations.md")
+            ),
         )]
     }
 }
@@ -183,6 +221,8 @@ mod tests {
                 "sqlserver_workflow_security_provisioning",
                 "sqlserver_workflow_server_administration",
                 "sqlserver_workflow_performance_diagnostics",
+                "sqlserver_workflow_blocking_and_locks",
+                "sqlserver_workflow_index_tuning_recommendations",
             ])
         );
     }
@@ -235,5 +275,43 @@ mod tests {
         assert!(text.contains("- job_name: nightly_backup"));
         assert!(text.contains("- database"));
         assert!(!text.contains("- database: "));
+    }
+
+    #[tokio::test]
+    async fn blocking_and_locks_prompt_gates_termination_on_explicit_confirmation() {
+        let messages = server()
+            .sqlserver_workflow_blocking_and_locks_prompt()
+            .await;
+        let text = &messages[0].content.as_text().unwrap().text;
+        assert!(text.to_lowercase().contains("confirm"));
+        assert!(text.contains("sp_executesql"));
+    }
+
+    #[tokio::test]
+    async fn index_tuning_recommendations_prompt_echoes_supplied_args_and_gates_on_confirmation() {
+        let messages = server()
+            .sqlserver_workflow_index_tuning_recommendations_prompt(Parameters(
+                IndexTuningRecommendationsArgs {
+                    database: Some("sandbox".to_string()),
+                    schema: None,
+                    table: Some("orders".to_string()),
+                },
+            ))
+            .await;
+        let text = &messages[0].content.as_text().unwrap().text;
+        assert!(text.contains("- database: sandbox"));
+        assert!(text.contains("- table: orders"));
+        assert!(text.contains("- schema"));
+        assert!(text.to_lowercase().contains("confirm"));
+    }
+
+    #[tokio::test]
+    async fn performance_diagnostics_points_to_the_dedicated_blocking_workflow() {
+        let messages = server()
+            .sqlserver_workflow_performance_diagnostics_prompt()
+            .await;
+        let text = &messages[0].content.as_text().unwrap().text;
+        assert!(text.contains("sqlserver_workflow_blocking_and_locks"));
+        assert!(text.contains("sqlserver_workflow_index_tuning_recommendations"));
     }
 }
