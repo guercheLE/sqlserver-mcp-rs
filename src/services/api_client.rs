@@ -90,15 +90,33 @@ struct Param {
     x_sql_type: String,
 }
 
+/// Every operation's generated input schema wraps its real parameters one
+/// level down, under a single top-level `body` property (mcpify's
+/// request-body convention -- see `ApiClient::execute`'s own `body`
+/// extraction from the caller's `args`, which this mirrors), almost always
+/// as a `$ref` into the schema's own `$defs` rather than an inline object.
+/// Resolves that wrapper (and its `$ref`, if present) to the real
+/// parameter-name map. Returns `None` for a schema with no `body` property
+/// at all (a parameterless operation), which `ordered_params` below treats
+/// as zero parameters.
+fn request_properties(input_schema: &Value) -> Option<&Map<String, Value>> {
+    let body_schema = input_schema.get("properties")?.get("body")?;
+    let resolved = match body_schema.get("$ref").and_then(Value::as_str) {
+        Some(reference) => reference
+            .strip_prefix("#/$defs/")
+            .and_then(|name| input_schema.get("$defs")?.get(name))?,
+        None => body_schema,
+    };
+    resolved.get("properties").and_then(Value::as_object)
+}
+
 /// Reads `properties`/`x-sql-ordinal`/`x-sql-type` off a resolved input
 /// schema (see `tools/generate_openapi.py`'s `build_request_schema`),
 /// sorted by declared ordinal -- required for a table-valued function's
 /// positional call syntax, and used for stored procedures' named syntax
 /// mainly for a deterministic/readable generated statement.
 fn ordered_params(input_schema: &Value) -> Vec<Param> {
-    let mut params: Vec<Param> = input_schema
-        .get("properties")
-        .and_then(Value::as_object)
+    let mut params: Vec<Param> = request_properties(input_schema)
         .into_iter()
         .flatten()
         .map(|(name, schema)| Param {
@@ -189,11 +207,16 @@ fn build_statement(
             } else {
                 let mut assignments = Vec::with_capacity(params.len());
                 for (i, p) in params.iter().enumerate() {
-                    assignments.push(format!(
-                        "{} = @P{}",
-                        quote_ident(validate_ident(&p.name)?),
-                        i + 1
-                    ));
+                    // Named EXEC-argument syntax requires the `@` sigil
+                    // directly on the parameter name (`EXEC proc @param =
+                    // value`, not `EXEC proc [param] = value` or
+                    // `EXEC proc param = value`) -- bracket-quoting is for
+                    // object identifiers, not parameter references, and
+                    // using it here produced a syntax error on every
+                    // parameterized stored-procedure call. `validate_ident`
+                    // still runs first for the same defense-in-depth reason
+                    // as the object-identifier path above.
+                    assignments.push(format!("@{} = @P{}", validate_ident(&p.name)?, i + 1));
                 }
                 format!("EXEC {qualified} {}", assignments.join(", "))
             }
@@ -443,9 +466,45 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "EXEC [master].[sys].[sp_rename] [objname] = @P1, [newname] = @P2"
+            "EXEC [master].[sys].[sp_rename] @objname = @P1, @newname = @P2"
         );
         assert_eq!(bound.len(), 2);
+    }
+
+    /// Regression test for incident 26-07-05700-04: every parameterized
+    /// stored-procedure `call` (e.g. `sp_columns`, `sp_executesql`) failed
+    /// with SQL Server error 102 "Incorrect syntax near '='", no matter
+    /// what argument keys the caller supplied, because the generated
+    /// assignment list bracket-quoted the parameter name (`[table_name] =
+    /// @P1`) instead of prefixing it with `@` (`@table_name = @P1`) --
+    /// bracket-quoting is valid for object identifiers, not for named
+    /// EXEC arguments. This asserts the `@`-prefixed form specifically, so
+    /// a future edit can't silently reintroduce bracket-quoting here even
+    /// if it still happens to produce syntactically-plausible-looking SQL.
+    #[test]
+    fn build_statement_uses_at_prefixed_names_not_bracket_quoting_for_named_exec_arguments() {
+        let params = vec![Param {
+            name: "table_name".to_string(),
+            ordinal: 1,
+            x_sql_type: "nvarchar(384)".to_string(),
+        }];
+        let mut body = Map::new();
+        body.insert(
+            "table_name".to_string(),
+            Value::String("databases".to_string()),
+        );
+        let (sql, _bound) = build_statement(
+            "sandbox",
+            "sys",
+            "sp_columns",
+            Some("SQL_STORED_PROCEDURE"),
+            &params,
+            &body,
+            None,
+        )
+        .unwrap();
+        assert_eq!(sql, "EXEC [sys].[sp_columns] @table_name = @P1");
+        assert!(!sql.contains("[table_name]"));
     }
 
     #[test]
@@ -536,10 +595,21 @@ mod tests {
 
     #[test]
     fn ordered_params_follow_the_schema_ordinals() {
+        // Matches the real shape every generated schema actually has (see
+        // `generated_schemas.json`): parameters live under `$defs`, `$ref`'d
+        // from the top-level `body` property, not as flat top-level
+        // properties.
         let schema = serde_json::json!({
             "properties": {
-                "second": { "x-sql-ordinal": 2, "x-sql-type": "int" },
-                "first": { "x-sql-ordinal": 1, "x-sql-type": "nvarchar(20)" }
+                "body": { "$ref": "#/$defs/sys_example_Request" }
+            },
+            "$defs": {
+                "sys_example_Request": {
+                    "properties": {
+                        "second": { "x-sql-ordinal": 2, "x-sql-type": "int" },
+                        "first": { "x-sql-ordinal": 1, "x-sql-type": "nvarchar(20)" }
+                    }
+                }
             }
         });
 
@@ -548,6 +618,59 @@ mod tests {
         assert_eq!(params[0].name, "first");
         assert_eq!(params[0].x_sql_type, "nvarchar(20)");
         assert_eq!(params[1].name, "second");
+    }
+
+    /// Regression test for incident 26-07-05700-04's underlying second bug:
+    /// `ordered_params` used to read the schema's literal top-level
+    /// `properties` map, which for every real generated schema is just
+    /// `{"body": {"$ref": ...}}` -- so every parameterized operation
+    /// collapsed to a single fake `body` parameter (observed live as
+    /// `EXEC ... @body = @P1` instead of the real named arguments) rather
+    /// than the operation's actual parameters.
+    #[test]
+    fn ordered_params_resolves_the_body_ref_wrapper() {
+        let schema = serde_json::json!({
+            "properties": {
+                "body": { "$ref": "#/$defs/sys_sp_columns_Request" }
+            },
+            "$defs": {
+                "sys_sp_columns_Request": {
+                    "properties": {
+                        "table_name": { "x-sql-ordinal": 1, "x-sql-type": "nvarchar(384)" },
+                        "table_owner": { "x-sql-ordinal": 2, "x-sql-type": "nvarchar(384)" }
+                    }
+                }
+            }
+        });
+
+        let params = ordered_params(&schema);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "table_name");
+        assert_eq!(params[1].name, "table_owner");
+        assert!(params.iter().all(|p| p.name != "body"));
+    }
+
+    #[test]
+    fn ordered_params_resolves_an_inline_body_without_a_ref() {
+        let schema = serde_json::json!({
+            "properties": {
+                "body": {
+                    "properties": {
+                        "only": { "x-sql-ordinal": 1, "x-sql-type": "int" }
+                    }
+                }
+            }
+        });
+
+        let params = ordered_params(&schema);
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "only");
+    }
+
+    #[test]
+    fn ordered_params_is_empty_for_a_schema_with_no_body_property() {
+        let schema = serde_json::json!({ "properties": {} });
+        assert!(ordered_params(&schema).is_empty());
     }
 
     #[test]
