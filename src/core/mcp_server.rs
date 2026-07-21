@@ -102,7 +102,9 @@ impl McpifyServer {
     ) -> Result<CallToolResult, McpError> {
         let api_version = self.api_version.clone();
         self.run_tool("search", async move {
-            let conn = cached_store_connection(&api_version)?.lock().unwrap();
+            let conn = cached_store_connection(&api_version)?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             search_operations(&conn, &args.query, args.limit)
         })
         .await
@@ -114,7 +116,9 @@ impl McpifyServer {
     async fn get(&self, Parameters(args): Parameters<GetArgs>) -> Result<CallToolResult, McpError> {
         let api_version = self.api_version.clone();
         self.run_tool("get", async move {
-            let conn = cached_store_connection(&api_version)?.lock().unwrap();
+            let conn = cached_store_connection(&api_version)?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             get_operation(&conn, &args.operation_id)
         })
         .await
@@ -138,7 +142,9 @@ impl McpifyServer {
             // `&Connection`/`MutexGuard<Connection>` held across an await
             // point would make this future non-`Send`.
             let endpoint = {
-                let conn = cached_store_connection(&api_version)?.lock().unwrap();
+                let conn = cached_store_connection(&api_version)?
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 get_endpoint(&conn, &args.operation_id)?.ok_or_else(|| {
                     McpifyError::NotFound(format!("unknown operationId '{}'", args.operation_id))
                 })?
