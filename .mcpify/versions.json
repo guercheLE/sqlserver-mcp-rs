@@ -9,25 +9,25 @@
       "db_file": "mcp_store.db",
       "schemas_file": "src/validation/generated_schemas.json.zst",
       "source": "docs/sqlserver-eda-openapi-pipeline/openapi/2025/combined.yaml",
-      "added_at": 1784311035
+      "added_at": 1784659582
     },
     "2022": {
       "db_file": "mcp_store_v2022.db",
       "schemas_file": "src/validation/generated_schemas_v2022.json.zst",
       "source": "docs/sqlserver-eda-openapi-pipeline/openapi/2022/combined.yaml",
-      "added_at": 1784311035
+      "added_at": 1784659580
     },
     "2019": {
       "db_file": "mcp_store_v2019.db",
       "schemas_file": "src/validation/generated_schemas_v2019.json.zst",
       "source": "docs/sqlserver-eda-openapi-pipeline/openapi/2019/combined.yaml",
-      "added_at": 1784311036
+      "added_at": 1784659579
     },
     "2017": {
       "db_file": "mcp_store_v2017.db",
       "schemas_file": "src/validation/generated_schemas_v2017.json.zst",
       "source": "docs/sqlserver-eda-openapi-pipeline/openapi/2017/combined.yaml",
-      "added_at": 1784311036
+      "added_at": 1784659578
     }
   }
 }

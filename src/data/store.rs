@@ -30,16 +30,6 @@ pub const VERSION_STORE_FILES: &[(&str, &str)] = &[
     ("2017", "mcp_store_v2017.db"),
 ];
 
-// Every `.db` this crate supports, embedded into the compiled binary
-// itself via `include_bytes!` — mirrors how `validator.rs` already
-// embeds each version's schema, so this crate never needs its `.db`
-// files to exist anywhere on disk after `cargo install`. Each entry is
-// zstd-compressed (level 19), not the raw `.db` bytes: several real API
-// versions' worth of embeddings can push a package over crates.io's
-// 10MiB upload limit long before it's otherwise close, and compressing
-// buys back roughly 60-70% with no behavior change — `resolve_store_path`
-// below decompresses back to a real on-disk `.db` file before
-// `rusqlite::Connection::open` ever sees it.
 const VERSION_STORE_BYTES: &[(&str, &[u8])] = &[
     ("2025", include_bytes!("../../mcp_store.db.zst")),
     ("2022", include_bytes!("../../mcp_store_v2022.db.zst")),
