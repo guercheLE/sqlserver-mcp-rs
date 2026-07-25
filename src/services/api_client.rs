@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server 2025 - master/msdb/model combined catalog MCP server.
 //
 // Real transport: a pooled TDS connection to SQL Server (via `tiberius`),
 // replacing mcpify's originally-generated `reqwest`-based HTTP client.
@@ -6,13 +6,15 @@
 // docs/sqlserver-eda-openapi-pipeline/README.md's "OpenAPI mapping
 // convention") -- there is no real HTTP endpoint on the other end, so
 // `endpoint.path`/`endpoint.method` don't describe an HTTP request; they
-// encode `/<db>/<schema>/<name>` (set by `merge_openapi.py`) and are always
-// `POST`. `endpoint.description` carries the object's `sys.objects.type_desc`
-// (`VIEW` / `SQL_STORED_PROCEDURE` / `SQL_INLINE_TABLE_VALUED_FUNCTION` /
-// `EXTENDED_STORED_PROCEDURE`), which determines the actual T-SQL shape:
-// a bare `SELECT` for views, `SELECT ... FROM name(args)` for inline
-// table-valued functions (positional args -- no named-parameter call syntax
-// exists for a FROM-clause function call), or `EXEC name @p = v, ...` for
+// encode `/<schema>/<name>` (set by `tools/generate_openapi.py`, one path per
+// deduplicated operation -- see that script's `build_operations()`) and are
+// always `POST`. `endpoint.description` carries the object's
+// `sys.objects.type_desc` (`VIEW` / `SQL_STORED_PROCEDURE` /
+// `SQL_INLINE_TABLE_VALUED_FUNCTION` / `EXTENDED_STORED_PROCEDURE` / ...),
+// which determines the actual T-SQL shape: a bare `SELECT` for views,
+// `SELECT ... FROM name(args)` for table-valued functions and `SELECT
+// name(args)` for scalar functions (positional args -- no named-parameter
+// call syntax exists for a function call), or `EXEC name @p = v, ...` for
 // stored procedures (named, so param order and optional/defaulted params
 // don't matter).
 
@@ -26,26 +28,28 @@ use crate::services::sql_pool;
 use crate::services::sql_type::{column_data_to_json, json_to_param};
 use crate::validation::validator::resolved_schemas_for;
 
-/// Parses `endpoint.path`'s `/<db>/<schema>/<name>` shape (set by
-/// `docs/sqlserver-eda-openapi-pipeline/tools/merge_openapi.py`) into its
-/// three parts -- the only place in this generated project that recovers
-/// which database an operation targets, since mcpify's store doesn't carry
-/// the source spec's `x-sql-database` vendor extension through.
-fn parse_path(path: &str) -> anyhow::Result<(&str, &str, &str)> {
-    let mut parts = path.trim_start_matches('/').splitn(3, '/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(db), Some(schema), Some(name))
-            if !db.is_empty() && !schema.is_empty() && !name.is_empty() =>
-        {
-            Ok((
-                validate_ident(db)?,
-                validate_ident(schema)?,
-                validate_ident(name)?,
-            ))
+/// The synthetic request-body property documenting an operation's execution
+/// context (see `docs/sqlserver-eda-openapi-pipeline/tools/generate_openapi.py`'s
+/// `EXECUTION_DATABASE_PARAM`) -- not a real SQL Server parameter of the
+/// underlying object, so it's pulled out of `body` and used to qualify the
+/// call rather than being bound as a `@P<n>` argument. Every generated
+/// operation carries this property (see `ordered_params`'s exclusion of it),
+/// so this name is reserved across the whole generated store.
+const EXECUTION_DATABASE_PARAM: &str = "execution_database";
+
+/// Parses `endpoint.path`'s `/<schema>/<name>` shape (set by
+/// `docs/sqlserver-eda-openapi-pipeline/tools/generate_openapi.py`) into its
+/// two parts. Unlike the old per-database-prefixed path convention, which
+/// database to actually run against is no longer baked into the path at
+/// generation time (a deduplicated operation may exist identically in more
+/// than one of master/msdb/model) -- see `resolve_execution_database`.
+fn parse_path(path: &str) -> anyhow::Result<(&str, &str)> {
+    let mut parts = path.trim_start_matches('/').splitn(2, '/');
+    match (parts.next(), parts.next()) {
+        (Some(schema), Some(name)) if !schema.is_empty() && !name.is_empty() => {
+            Ok((validate_ident(schema)?, validate_ident(name)?))
         }
-        _ => anyhow::bail!(
-            "endpoint path '{path}' is not in the expected /<db>/<schema>/<name> shape"
-        ),
+        _ => anyhow::bail!("endpoint path '{path}' is not in the expected /<schema>/<name> shape"),
     }
 }
 
@@ -84,6 +88,33 @@ fn quote_ident(ident: &str) -> String {
     format!("[{}]", ident.replace(']', "]]"))
 }
 
+/// Resolves an operation's execution-context database: the caller-supplied
+/// `execution_database` body property (see `EXECUTION_DATABASE_PARAM`) if
+/// present, else the server's configured `Config::default_database` if one
+/// was set up (optional, see `cli::setup_wizard`), else `None` -- meaning
+/// `build_statement` two-part-qualifies the call and lets the connection's
+/// own current database context resolve it (equivalent to `DB_NAME()`/
+/// `DB_ID()`). This three-tier fallback applies uniformly to every
+/// operation now, not just ones documented in a particular database --
+/// see `build_statement`'s doc comment.
+fn resolve_execution_database(
+    body: &Map<String, Value>,
+    config: &Config,
+) -> anyhow::Result<Option<String>> {
+    if let Some(value) = body.get(EXECUTION_DATABASE_PARAM) {
+        let requested = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("'{EXECUTION_DATABASE_PARAM}' must be a string"))?;
+        return Ok(Some(validate_ident(requested)?.to_string()));
+    }
+    config
+        .default_database
+        .as_deref()
+        .map(validate_ident)
+        .transpose()
+        .map(|opt| opt.map(str::to_string))
+}
+
 struct Param {
     name: String,
     ordinal: u64,
@@ -119,6 +150,7 @@ fn ordered_params(input_schema: &Value) -> Vec<Param> {
     let mut params: Vec<Param> = request_properties(input_schema)
         .into_iter()
         .flatten()
+        .filter(|(name, _)| name.as_str() != EXECUTION_DATABASE_PARAM)
         .map(|(name, schema)| Param {
             name: name.clone(),
             ordinal: schema
@@ -138,46 +170,33 @@ fn ordered_params(input_schema: &Value) -> Vec<Param> {
 
 /// Builds the T-SQL text (with `@P1`/`@P2`/... placeholders) and the
 /// matching positionally-ordered bound parameters for one operation call.
+///
+/// `execution_database` is the resolved value of the synthetic
+/// `execution_database` request property (see `resolve_execution_database`)
+/// -- every operation now behaves the way only `sandbox`-tagged operations
+/// used to: three-part-qualified (`db.schema.name`) when a database is
+/// known, two-part-qualified (`schema.name`, resolved against the
+/// connection's own current database context) when it isn't. There is no
+/// per-operation baked-in database anymore -- a deduplicated operation may
+/// exist identically in more than one of master/msdb/model (see
+/// `docs/sqlserver-eda-openapi-pipeline/README.md`'s "OpenAPI mapping
+/// convention"), so which one to actually hit is always resolved per call.
 fn build_statement(
-    db: &str,
     schema: &str,
     name: &str,
     kind: Option<&str>,
     params: &[Param],
     body: &Map<String, Value>,
-    database_override: Option<&str>,
+    execution_database: Option<&str>,
 ) -> anyhow::Result<(String, Vec<Box<dyn ToSql>>)> {
-    // "sandbox" isn't a real database name a production instance is
-    // guaranteed to have -- it's the EDA pipeline's placeholder (see
-    // docs/sqlserver-eda-openapi-pipeline/README.md) for whatever database
-    // the TDS connection is already in (`sql_pool`/this fn's caller never
-    // sets an initial `database` on `tiberius::Config`, so that's always
-    // the login's server-configured default database, i.e. `db_name()`).
-    // Qualifying with a literal `[sandbox].` prefix would send every
-    // sandbox-database call at the wrong (nonexistent, or coincidentally
-    // named) database in any real deployment, so this two-part-qualifies
-    // instead by default and lets the connection's own current-database
-    // context resolve it -- unless the caller passed a top-level
-    // `database` argument (see `ApiClient::execute`), in which case that
-    // name replaces "sandbox" and the call goes out three-part qualified
-    // against the requested database instead. `master`/`msdb` are real,
-    // always-present system database names on every SQL Server instance,
-    // so those always stay three-part qualified and never take the
-    // override -- there's no ambiguity to resolve for them.
-    let qualified = match (db, database_override) {
-        ("sandbox", Some(requested_db)) => format!(
-            "{}.{}.{}",
-            quote_ident(requested_db),
-            quote_ident(schema),
-            quote_ident(name)
-        ),
-        ("sandbox", None) => format!("{}.{}", quote_ident(schema), quote_ident(name)),
-        (_, _) => format!(
+    let qualified = match execution_database {
+        Some(db) => format!(
             "{}.{}.{}",
             quote_ident(db),
             quote_ident(schema),
             quote_ident(name)
         ),
+        None => format!("{}.{}", quote_ident(schema), quote_ident(name)),
     };
 
     let mut bound: Vec<Box<dyn ToSql>> = Vec::with_capacity(params.len());
@@ -277,24 +296,13 @@ impl ApiClient {
     /// server's own configured credentials -- there is no per-request
     /// credential override; SQL Server auth is always this server's own
     /// configured identity, not something a caller supplies per call.
-    ///
-    /// A top-level `database` string in `args` (a sibling of `body`, e.g.
-    /// `{"database": "reporting", "body": {...}}`) lets a caller target a
-    /// specific database for a `sandbox`-tagged operation, overriding the
-    /// connection's own current database (see `build_statement`'s doc
-    /// comment for why "sandbox" needs this at all). It's not part of the
-    /// generated/documented input schema -- mcpify's schema wrapper
-    /// doesn't set `additionalProperties: false`, so an extra key here
-    /// passes `validate_input` unnoticed -- and it's a no-op for
-    /// `master`/`msdb` operations, which are always sent against their
-    /// real, literal database regardless of this argument.
     pub async fn execute(
         &self,
         endpoint: &EndpointRecord,
         args: &Value,
         auth_manager: &mut AuthManager,
     ) -> anyhow::Result<Value> {
-        let (db, schema, name) = parse_path(&endpoint.path)?;
+        let (schema, name) = parse_path(&endpoint.path)?;
 
         let (input_schema, _output_schema) =
             resolved_schemas_for(&self.config.api_version, &endpoint.operation_id).ok_or_else(
@@ -315,20 +323,15 @@ impl ApiClient {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let database_override = args_map
-            .get("database")
-            .and_then(Value::as_str)
-            .map(validate_ident)
-            .transpose()?;
+        let execution_database = resolve_execution_database(&body, &self.config)?;
 
         let (sql, bound) = build_statement(
-            db,
             schema,
             name,
             endpoint.description.as_deref(),
             &params,
             &body,
-            database_override,
+            execution_database.as_deref(),
         )?;
 
         let auth_method = auth_manager.resolve_tds_auth().await?;
@@ -385,16 +388,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_path_splits_db_schema_name() {
+    fn parse_path_splits_schema_name() {
         assert_eq!(
-            parse_path("/master/INFORMATION_SCHEMA/COLUMNS").unwrap(),
-            ("master", "INFORMATION_SCHEMA", "COLUMNS")
+            parse_path("/INFORMATION_SCHEMA/COLUMNS").unwrap(),
+            ("INFORMATION_SCHEMA", "COLUMNS")
         );
     }
 
     #[test]
     fn parse_path_rejects_a_path_with_too_few_segments() {
-        assert!(parse_path("/master/COLUMNS").is_err());
+        assert!(parse_path("/COLUMNS").is_err());
     }
 
     #[test]
@@ -418,13 +421,12 @@ mod tests {
 
     #[test]
     fn parse_path_rejects_a_path_with_an_unsafe_segment() {
-        assert!(parse_path("/master/sys/sp_who; DROP TABLE endpoints--").is_err());
+        assert!(parse_path("/sys/sp_who; DROP TABLE endpoints--").is_err());
     }
 
     #[test]
     fn build_statement_selects_from_a_view_with_no_parameters() {
         let (sql, bound) = build_statement(
-            "master",
             "INFORMATION_SCHEMA",
             "COLUMNS",
             Some("VIEW"),
@@ -433,7 +435,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(sql, "SELECT * FROM [master].[INFORMATION_SCHEMA].[COLUMNS]");
+        assert_eq!(sql, "SELECT * FROM [INFORMATION_SCHEMA].[COLUMNS]");
         assert!(bound.is_empty());
     }
 
@@ -455,13 +457,12 @@ mod tests {
         body.insert("objname".to_string(), Value::String("t1".to_string()));
         body.insert("newname".to_string(), Value::String("t2".to_string()));
         let (sql, bound) = build_statement(
-            "master",
             "sys",
             "sp_rename",
             Some("SQL_STORED_PROCEDURE"),
             &params,
             &body,
-            None,
+            Some("master"),
         )
         .unwrap();
         assert_eq!(
@@ -494,7 +495,6 @@ mod tests {
             Value::String("databases".to_string()),
         );
         let (sql, _bound) = build_statement(
-            "sandbox",
             "sys",
             "sp_columns",
             Some("SQL_STORED_PROCEDURE"),
@@ -517,13 +517,12 @@ mod tests {
         let mut body = Map::new();
         body.insert("session_id".to_string(), Value::from(52));
         let (sql, bound) = build_statement(
-            "master",
             "sys",
             "dm_exec_sql_text",
             Some("SQL_INLINE_TABLE_VALUED_FUNCTION"),
             &params,
             &body,
-            None,
+            Some("master"),
         )
         .unwrap();
         assert_eq!(sql, "SELECT * FROM [master].[sys].[dm_exec_sql_text](@P1)");
@@ -531,25 +530,16 @@ mod tests {
     }
 
     #[test]
-    fn build_statement_omits_the_database_qualifier_for_sandbox_by_default() {
-        let (sql, bound) = build_statement(
-            "sandbox",
-            "dbo",
-            "widgets",
-            Some("VIEW"),
-            &[],
-            &Map::new(),
-            None,
-        )
-        .unwrap();
+    fn build_statement_omits_the_database_qualifier_by_default() {
+        let (sql, bound) =
+            build_statement("dbo", "widgets", Some("VIEW"), &[], &Map::new(), None).unwrap();
         assert_eq!(sql, "SELECT * FROM [dbo].[widgets]");
         assert!(bound.is_empty());
     }
 
     #[test]
-    fn build_statement_replaces_sandbox_with_a_requested_database_override() {
+    fn build_statement_three_part_qualifies_with_a_requested_execution_database() {
         let (sql, bound) = build_statement(
-            "sandbox",
             "dbo",
             "widgets",
             Some("VIEW"),
@@ -563,24 +553,8 @@ mod tests {
     }
 
     #[test]
-    fn build_statement_ignores_the_database_override_for_master_and_msdb() {
-        let (sql, _bound) = build_statement(
-            "master",
-            "sys",
-            "sp_who",
-            Some("SQL_STORED_PROCEDURE"),
-            &[],
-            &Map::new(),
-            Some("reporting"),
-        )
-        .unwrap();
-        assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
-    }
-
-    #[test]
     fn build_statement_execs_a_parameterless_proc() {
         let (sql, bound) = build_statement(
-            "master",
             "sys",
             "sp_who",
             Some("SQL_STORED_PROCEDURE"),
@@ -589,8 +563,87 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(sql, "EXEC [master].[sys].[sp_who]");
+        assert_eq!(sql, "EXEC [sys].[sp_who]");
         assert!(bound.is_empty());
+    }
+
+    #[test]
+    fn ordered_params_excludes_the_synthetic_execution_database_property() {
+        let schema = serde_json::json!({
+            "properties": {
+                "body": { "$ref": "#/$defs/sys_sp_who_Request" }
+            },
+            "$defs": {
+                "sys_sp_who_Request": {
+                    "properties": {
+                        "loginame": { "x-sql-ordinal": 1, "x-sql-type": "sysname" },
+                        "execution_database": { "type": "string" }
+                    }
+                }
+            }
+        });
+
+        let params = ordered_params(&schema);
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "loginame");
+    }
+
+    #[test]
+    fn resolve_execution_database_prefers_the_body_property_over_the_configured_default() {
+        let mut body = Map::new();
+        body.insert(
+            EXECUTION_DATABASE_PARAM.to_string(),
+            Value::String("reporting".to_string()),
+        );
+        let mut config = test_config();
+        config.default_database = Some("fallback".to_string());
+        assert_eq!(
+            resolve_execution_database(&body, &config)
+                .unwrap()
+                .as_deref(),
+            Some("reporting")
+        );
+    }
+
+    #[test]
+    fn resolve_execution_database_falls_back_to_the_configured_default() {
+        let mut config = test_config();
+        config.default_database = Some("fallback".to_string());
+        assert_eq!(
+            resolve_execution_database(&Map::new(), &config)
+                .unwrap()
+                .as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn resolve_execution_database_is_none_when_nothing_is_configured_or_supplied() {
+        assert_eq!(
+            resolve_execution_database(&Map::new(), &test_config()).unwrap(),
+            None
+        );
+    }
+
+    fn test_config() -> Config {
+        Config {
+            url: "localhost".to_string(),
+            auth_method: crate::core::config_schema::AuthMethod::SqlServer,
+            sql_port: 1433,
+            pool_max_size: 10,
+            trust_server_cert: true,
+            api_version: "2025".to_string(),
+            log_level: "info".to_string(),
+            rate_limit: 100,
+            timeout_ms: 30_000,
+            cache_size: 500,
+            retry_attempts: 3,
+            transport: crate::core::config_schema::Transport::Stdio,
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+            cors_allow: None,
+            default_database: None,
+        }
     }
 
     #[test]
@@ -683,7 +736,6 @@ mod tests {
 
         assert!(
             build_statement(
-                "master",
                 "sys",
                 "sp_example",
                 Some("SQL_STORED_PROCEDURE"),

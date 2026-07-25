@@ -59,6 +59,26 @@ async fn prompt_api_version() -> anyhow::Result<String> {
 }
 // mcpify:versions:end
 
+/// Server-wide fallback for an operation's optional `execution_database`
+/// request property (see `core::config_schema::Config::default_database`).
+/// Purely a convenience default — left blank, a call with no
+/// `execution_database` falls through to the connection's own current
+/// database context.
+async fn prompt_default_database() -> anyhow::Result<Option<String>> {
+    let answer = tokio::task::spawn_blocking(|| {
+        inquire::Text::new(
+            "Default database for operations that don't specify one (optional, press Enter to skip):",
+        )
+        .prompt()
+    })
+    .await??;
+    Ok(if answer.trim().is_empty() {
+        None
+    } else {
+        Some(answer)
+    })
+}
+
 async fn prompt_transport() -> anyhow::Result<Transport> {
     let choices = vec![
         "stdio (spawned as a subprocess by the MCP client)",
@@ -260,6 +280,7 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
     let auth_method = prompt_auth_method().await?;
     let credentials = prompt_credentials(auth_method).await?;
     let api_version = prompt_api_version().await?;
+    let default_database = prompt_default_database().await?;
     let transport = prompt_transport().await?;
 
     save_credential("active-credentials", &serde_json::to_string(&credentials)?)?;
@@ -274,6 +295,12 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
             .to_string(),
     );
     env.insert("SQLSERVER_API_VERSION".to_string(), api_version);
+    if let Some(default_database) = &default_database {
+        env.insert(
+            "SQLSERVER_DEFAULT_DATABASE".to_string(),
+            default_database.clone(),
+        );
+    }
     env.insert(
         "SQLSERVER_TRANSPORT".to_string(),
         serde_json::to_value(transport)?
@@ -287,12 +314,15 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
 
     // Non-secret fields only, keyed exactly as `config_manager::load_config`
     // reads them back from YAML — credentials never go in this file.
-    let config_fields = serde_json::json!({
+    let mut config_fields = serde_json::json!({
         "url": env.get("SQLSERVER_URL"),
         "auth_method": env.get("SQLSERVER_AUTH_METHOD"),
         "api_version": env.get("SQLSERVER_API_VERSION"),
         "transport": env.get("SQLSERVER_TRANSPORT"),
     });
+    if let Some(default_database) = &default_database {
+        config_fields["default_database"] = serde_json::Value::String(default_database.clone());
+    }
 
     prompt_persistence(&env, &config_fields).await?;
     print_mcp_client_config(transport, &env);

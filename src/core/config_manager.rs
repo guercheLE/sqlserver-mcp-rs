@@ -48,6 +48,11 @@ fn env_overrides() -> Map<String, Value> {
         ("cache_size", "CACHE_SIZE"),
         ("retry_attempts", "RETRY_ATTEMPTS"),
         ("port", "PORT"),
+        // Hand-added alongside Config::default_database (see that field's
+        // own doc comment) -- mcpify has no schema property to generate
+        // this env-var mapping from, since it's server configuration, not
+        // an OpenAPI request parameter.
+        ("default_database", "DEFAULT_DATABASE"),
     ] {
         if let Ok(value) = std::env::var(format!("{ENV_PREFIX}_{env_suffix}")) {
             overrides.insert(config_key.to_string(), Value::String(value));

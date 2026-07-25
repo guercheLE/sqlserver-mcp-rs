@@ -114,6 +114,21 @@ pub struct Config {
     pub port: u16,
     #[serde(default)]
     pub cors_allow: Option<String>,
+    /// Server-wide fallback for an operation's optional `execution_database`
+    /// request property (see `services::api_client::ApiClient::execute` and
+    /// docs/sqlserver-eda-openapi-pipeline/README.md's "OpenAPI mapping
+    /// convention") when a caller doesn't supply one. Added by hand, not by
+    /// mcpify — this field has no corresponding OpenAPI schema property to
+    /// generate from, since it's server *configuration*, not a per-call
+    /// argument. Like `auth::strategies::windows::WindowsAuthStrategy`, this
+    /// needs to be re-added after every `mcpify sync` (see
+    /// docs/sqlserver-eda-openapi-pipeline/scripts/regenerate_mcp_server.sh's
+    /// header comment). Left unset, a call with no `execution_database`
+    /// falls through to the connection's own current database context
+    /// (`DB_NAME()`/`DB_ID()`) -- this field is purely an optional
+    /// convenience default, never required.
+    #[serde(default)]
+    pub default_database: Option<String>,
 }
 
 impl Config {
