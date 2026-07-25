@@ -1,22 +1,52 @@
 #!/usr/bin/env python3
-"""Turn EDA JSON dumps (data/<version>/<db>.{objects,params,resultset}.json)
-into synthetic OpenAPI 3.1 YAML (openapi/<version>/<db>.yaml), one POST
-operation per documented stored procedure/function/view.
+"""Turn EDA extraction output (data/<version>/<db>.{objects,params,resultset,
+resultset_fmtonly}.{json,txt}) into one synthetic OpenAPI 3.1 YAML file per
+version (openapi/<version>/combined.yaml), one POST operation per documented
+stored procedure/function/view, deduplicated across master/msdb/model.
 
 Usage:
-    tools/generate_openapi.py <version> <database>
-    tools/generate_openapi.py 2022 master
+    tools/generate_openapi.py <version>
+    tools/generate_openapi.py 2022
 """
 from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Databases swept by sql/eda/*.sql, in merge-tiebreak priority order (first
+# db with usable data for a given field wins when candidates are otherwise
+# equally good -- see choose_best_resultset()/first_nonempty()). `model` is
+# SQL Server's own template database for new user databases -- the closest
+# thing to a generic "non-system user database" that's guaranteed to exist
+# on every instance, replacing the old ad hoc `sandbox` database.
+DATABASES = ("master", "msdb", "model")
+
+# How many operations survive the rank cut per version -- see rank_key()/
+# main(). The broad is_ms_shipped sweep this pipeline now runs (see
+# objects.sql) turns up far more than 500 candidates on a real instance;
+# this keeps the generated spec (and the MCP server built from it) to a
+# reviewable, genuinely useful subset instead of dumping every internal
+# system object SQL Server happens to ship.
+TOP_N_PER_VERSION = 500
+
+# The synthetic per-operation parameter documenting which database to run an
+# operation against. It is NOT a real parameter of the underlying SQL Server
+# object -- it never appears in sys.all_parameters -- so it's added here,
+# after introspection, to every operation's request body (see
+# build_request_schema()). It has to be a real documented request-body
+# property, not an OpenAPI vendor extension (`x-sql-...`), because mcpify's
+# generated store does not carry vendor extensions through into the schemas
+# it actually validates calls against (see services/api_client.rs's own
+# doc comment on this same limitation) -- only real `properties` survive.
+EXECUTION_DATABASE_PARAM = "execution_database"
+
 
 # SQL Server's FOR JSON splits output longer than 2,033 characters across
 # multiple actual result-set rows (each up to 2,033 chars), not just one long
@@ -29,6 +59,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # column header line/dashes separator precedes the data (e.g. if sqlcmd was
 # invoked without `-h -1`).
 def load_json_dump(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
     raw = path.read_text(encoding="utf-8-sig")
     text = raw.replace("\r\n", "\n").replace("\n", "").strip()
     if not text:
@@ -37,6 +69,61 @@ def load_json_dump(path: Path) -> list[dict]:
     if start == -1:
         raise ValueError(f"{path}: no JSON array/object found in sqlcmd output")
     return json.loads(text[start:])
+
+
+# resultset_fmtonly.sql's output is sqlcmd's own plain-text result-set
+# rendering (see that script's header comment for why: FMTONLY's column
+# metadata is a wire-protocol response to the *client*, not something a
+# T-SQL session can SELECT back out of itself), not JSON. Each object's
+# block is introduced by a `===OBJECT:schema.name:TYPE===` marker (from a
+# `PRINT` in the SQL script) and, when the FMTONLY-mode statement produced a
+# result set, followed by sqlcmd's normal header line + a dashes separator
+# line (`------ ------ ...`) -- the header line splits cleanly on whitespace
+# since SQL Server column identifiers can never contain spaces. A block
+# containing an `ERROR: ...` line instead means the TRY/CATCH in the SQL
+# script caught a failure for that object; a block with neither means
+# FMTONLY produced no result set at all for it.
+_OBJECT_MARKER_RE = re.compile(r"^===OBJECT:([^.]+)\.(.+):([A-Za-z]{1,2})===$")
+_SEPARATOR_LINE_RE = re.compile(r"^-+( +-+)*$")
+
+
+def load_fmtonly_dump(path: Path) -> dict[tuple[str, str], dict]:
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+
+    result: dict[tuple[str, str], dict] = {}
+    current_key: tuple[str, str] | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        if current_key is None:
+            return
+        columns: list[str] | None = None
+        error: str | None = None
+        for i, line in enumerate(current_lines):
+            stripped = line.strip()
+            if stripped.startswith("ERROR:"):
+                error = stripped[len("ERROR:"):].strip()
+                break
+            if i > 0 and stripped and _SEPARATOR_LINE_RE.match(stripped):
+                header = current_lines[i - 1].strip()
+                if header:
+                    columns = header.split()
+                break
+        result[current_key] = {"columns": columns, "error": error}
+
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        m = _OBJECT_MARKER_RE.match(line.strip())
+        if m:
+            flush()
+            current_key = (m.group(1), m.group(2))
+            current_lines = []
+        elif current_key is not None:
+            current_lines.append(line)
+    flush()
+    return result
 
 
 # Coarse SQL Server type -> OpenAPI (type, format) mapping. Anything not
@@ -75,9 +162,12 @@ SQL_TO_OPENAPI = {
     "table type": ("array", None),
 }
 
-# Hand-curated one-line summaries for the well-known objects in the allowlist.
-# System object metadata has no reliable description field to pull this from
-# automatically (see README limitations), so this is maintained by hand.
+# Hand-curated one-line summaries for well-known objects. This is prose
+# only -- unlike the old CURATED_PARAMETERS dict this file used to carry,
+# nothing here stands in for introspected parameter/column metadata; system
+# object metadata just has no reliable description field to pull a summary
+# from automatically (see README limitations), so a small hand-written set
+# covers the objects most worth explaining well.
 SUMMARIES = {
     "sp_who": "List active SQL Server user connections/processes and what they're blocking.",
     "sp_who2": "Extended, more readable version of sp_who.",
@@ -128,109 +218,6 @@ SUMMARIES = {
     "sp_helphistory": "Report the run history of a SQL Server Agent job.",
 }
 
-# Hand-curated parameter signatures for objects that live in sys.all_objects
-# (so objects.sql matches them) but have ZERO rows in sys.all_parameters --
-# confirmed live against a running SQL Server 2022 instance, and confirmed
-# that sp_help doesn't recover them either (sp_help reads the same catalog).
-# All seven are EXTENDED_STORED_PROCEDURE internally: their calling
-# convention is hardcoded into the query processor rather than catalogued
-# like a regular T-SQL/CLR proc's parameters, so this is the only way to
-# document their signatures -- same treatment already used for xp_* procs,
-# extended to these because they're common/important enough to be worth it.
-# Verified against Microsoft Learn (fetched 2026-07-17):
-#   sp_executesql:                  learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-executesql-transact-sql
-#   sp_prepare:                     learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-prepare-transact-sql
-#   sp_execute:                     learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-execute-transact-sql
-#   sp_unprepare:                   learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-unprepare-transact-sql
-#   sp_describe_first_result_set:   learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-describe-first-result-set-transact-sql
-#   sp_describe_undeclared_parameters: learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-describe-undeclared-parameters-transact-sql
-#   sp_set_session_context:         learn.microsoft.com/sql/relational-databases/system-stored-procedures/sp-set-session-context-transact-sql
-#
-# Two of these docs are internally inconsistent, resolved here by following
-# the worked examples over the conflicting prose/syntax box:
-#   - sp_prepare's argument prose calls `params` "a required OUTPUT
-#     parameter", but its own example passes it as a plain literal
-#     (N'@P1 NVARCHAR(128), ...') with no OUTPUT keyword -- treated as input.
-#   - sp_execute's syntax box shows "handle OUTPUT", but the argument
-#     description and worked example (`EXECUTE sp_execute 1, 49879;`, no
-#     OUTPUT keyword) both treat it as a plain input -- treated as input.
-CURATED_PARAMETERS = {
-    "sp_executesql": {
-        "params": [
-            {"parameter_name": "@stmt", "ordinal": 1, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@params", "ordinal": 2, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": True, "default_value": None},
-        ],
-        "note": (
-            "Additional @param1..@paramN values (and OUT/OUTPUT-flagged ones) are declared "
-            "dynamically by the @params string at call time and can't be enumerated statically."
-        ),
-    },
-    "sp_prepare": {
-        "params": [
-            {"parameter_name": "@handle", "ordinal": 1, "data_type": "int", "max_length": 4,
-             "precision": 10, "scale": 0, "is_output": True, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@params", "ordinal": 2, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@stmt", "ordinal": 3, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@options", "ordinal": 4, "data_type": "int", "max_length": 4,
-             "precision": 10, "scale": 0, "is_output": False, "has_default_value": True, "default_value": 0},
-        ],
-        "note": (
-            "@handle is returned by the engine (OUTPUT) for use with sp_execute/sp_unprepare. "
-            "@options is a bitmask; only 0x0001 (RETURN_METADATA) is documented."
-        ),
-    },
-    "sp_execute": {
-        "params": [
-            {"parameter_name": "@handle", "ordinal": 1, "data_type": "int", "max_length": 4,
-             "precision": 10, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-        ],
-        "note": (
-            "Additional positional/named bound_param values must match the declarations made by "
-            "the sp_prepare @params string and can't be enumerated statically."
-        ),
-    },
-    "sp_unprepare": {
-        "params": [
-            {"parameter_name": "@handle", "ordinal": 1, "data_type": "int", "max_length": 4,
-             "precision": 10, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-        ],
-    },
-    "sp_describe_first_result_set": {
-        "params": [
-            {"parameter_name": "@tsql", "ordinal": 1, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@params", "ordinal": 2, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": True, "default_value": None},
-            {"parameter_name": "@browse_information_mode", "ordinal": 3, "data_type": "tinyint", "max_length": 1,
-             "precision": 3, "scale": 0, "is_output": False, "has_default_value": True, "default_value": 0},
-        ],
-        "note": "@browse_information_mode: 0 = none, 1 = FOR BROWSE-style, 2 = cursor-preparation-style.",
-    },
-    "sp_describe_undeclared_parameters": {
-        "params": [
-            {"parameter_name": "@tsql", "ordinal": 1, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@params", "ordinal": 2, "data_type": "nvarchar", "max_length": -1,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": True, "default_value": None},
-        ],
-    },
-    "sp_set_session_context": {
-        "params": [
-            {"parameter_name": "@key", "ordinal": 1, "data_type": "nvarchar", "max_length": 256,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@value", "ordinal": 2, "data_type": "sql_variant", "max_length": 8000,
-             "precision": 0, "scale": 0, "is_output": False, "has_default_value": False, "default_value": None},
-            {"parameter_name": "@read_only", "ordinal": 3, "data_type": "bit", "max_length": 1,
-             "precision": 1, "scale": 0, "is_output": False, "has_default_value": True, "default_value": False},
-        ],
-        "note": "@key: sysname, max 128 bytes. @value: max 8,000 bytes; NULL frees the key's memory.",
-    },
-}
-
 
 def object_summary(name: str, type_desc: str) -> str:
     if name in SUMMARIES:
@@ -247,6 +234,8 @@ def object_summary(name: str, type_desc: str) -> str:
     readable = name.replace("_", " ")
     if type_desc.startswith("SQL_STORED_PROCEDURE") or type_desc == "CLR_STORED_PROCEDURE":
         return f"System stored procedure {readable} (see Microsoft Learn for details)."
+    if type_desc == "EXTENDED_STORED_PROCEDURE":
+        return f"Extended stored procedure {readable} (see Microsoft Learn for details)."
     if "TABLE_VALUED_FUNCTION" in type_desc or type_desc.endswith("_FUNCTION"):
         return f"System function {readable} (see Microsoft Learn for details)."
     if type_desc == "VIEW":
@@ -314,12 +303,18 @@ def sql_type_to_schema(
     return schema
 
 
-def build_request_schema(params: list[dict]) -> dict | None:
+def build_request_schema(params: list[dict], found_in_databases: list[str]) -> dict:
+    """Build the request-body schema for one operation: its real (introspected)
+    input parameters, plus the synthetic EXECUTION_DATABASE_PARAM every
+    operation gets regardless of whether it has any real parameters at all --
+    see that constant's own doc comment for why this can't be a vendor
+    extension instead. Never returns None: every operation now has a request
+    body, even a fully parameterless one, because the execution-context
+    parameter is always present.
+    """
     input_params = [p for p in params if not p.get("is_output")]
-    if not input_params:
-        return None
-    properties = {}
-    required = []
+    properties: dict = {}
+    required: list[str] = []
     for p in sorted(input_params, key=lambda p: p["ordinal"]):
         name = p["parameter_name"].lstrip("@") if p["parameter_name"] else f"param{p['ordinal']}"
         schema = sql_type_to_schema(p["data_type"], p.get("max_length"), p.get("precision"), p.get("scale"))
@@ -336,6 +331,23 @@ def build_request_schema(params: list[dict]) -> dict | None:
         properties[name] = schema
         if not p.get("has_default_value"):
             required.append(name)
+
+    properties[EXECUTION_DATABASE_PARAM] = {
+        "type": "string",
+        "description": (
+            "Optional execution context: the database to run this operation against "
+            "(SQL Server two/three-part-name qualification). This is NOT a real "
+            "parameter of the underlying SQL Server object -- it never appears in "
+            "sys.all_parameters for it -- it's added by tools/generate_openapi.py to "
+            "every operation. This object was found, identically, in: "
+            f"{', '.join(found_in_databases)}. If omitted, the server's configured "
+            "default database is used if one was set up (optional, see setup); "
+            "otherwise the connection's own current database context applies "
+            "(equivalent to DB_NAME()/DB_ID())."
+        ),
+        "x-sql-synthetic": True,
+    }
+
     body: dict = {"type": "object", "properties": properties}
     if required:
         body["required"] = required
@@ -353,31 +365,51 @@ def build_output_param_schema(params: list[dict]) -> dict | None:
     return {"type": "object", "properties": properties}
 
 
-def build_response_schema(rows: list[dict] | None) -> dict:
-    if not rows:
-        return {"description": "Result set shape unknown (introspection not attempted or object has no rows)."}
-    status = rows[0].get("result_set_status")
-    if status == "no_result_set":
+def build_response_schema(resultset: dict) -> dict:
+    """Build the 200 response schema from choose_best_resultset()'s pick.
+    `resultset["tier"]` is one of "described" (fully typed, from
+    sys.dm_exec_describe_first_result_set), "fmtonly" (column names only,
+    from resultset_fmtonly.sql's SET FMTONLY ON fallback), "no_result_set",
+    or "unknown".
+    """
+    tier = resultset["tier"]
+    if tier == "described":
+        rows = resultset["rows"]
+        properties = {}
+        for r in sorted(rows, key=lambda r: (r.get("column_ordinal") or 0)):
+            if not r.get("column_name"):
+                continue
+            system_type_name = r.get("system_type_name") or ""
+            base_type = system_type_name.split("(")[0]
+            # sys.dm_exec_describe_first_result_set's system_type_name already
+            # includes length/precision/scale (e.g. "nchar(30)", "decimal(18,2)"),
+            # so use it verbatim as x-sql-type instead of re-deriving it.
+            schema = sql_type_to_schema(base_type, sql_type_display=system_type_name or base_type)
+            properties[r["column_name"]] = schema
+        return {"type": "array", "items": {"type": "object", "properties": properties}}
+    if tier == "fmtonly":
+        properties = {
+            name: {"type": "string", "x-sql-type": "unknown (name-only, see x-sql-columns-source)"}
+            for name in resultset["columns"]
+        }
+        return {
+            "type": "array",
+            "items": {"type": "object", "properties": properties},
+            "x-sql-columns-source": "fmtonly",
+            "description": (
+                "Column names recovered via SET FMTONLY ON (sys.dm_exec_describe_first_result_set "
+                "could not describe this object's result set). Names only -- FMTONLY's column "
+                "metadata is a wire-protocol response to the connecting client, not something a "
+                "T-SQL session can query back typed information from; see resultset_fmtonly.sql."
+            ),
+        }
+    if tier == "no_result_set":
         return {"type": "object", "description": "This object does not return a result set."}
-    if status == "unknown":
-        err = rows[0].get("error_message")
-        desc = "Result set shape could not be determined by introspection"
-        if err:
-            desc += f": {err}"
-        return {"type": "object", "description": desc}
-    # status == "described"
-    properties = {}
-    for r in sorted(rows, key=lambda r: (r.get("column_ordinal") or 0)):
-        if not r.get("column_name"):
-            continue
-        system_type_name = r.get("system_type_name") or ""
-        base_type = system_type_name.split("(")[0]
-        # sys.dm_exec_describe_first_result_set's system_type_name already
-        # includes length/precision/scale (e.g. "nchar(30)", "decimal(18,2)"),
-        # so use it verbatim as x-sql-type instead of re-deriving it.
-        schema = sql_type_to_schema(base_type, sql_type_display=system_type_name or base_type)
-        properties[r["column_name"]] = schema
-    return {"type": "array", "items": {"type": "object", "properties": properties}}
+    # tier == "unknown"
+    desc = "Result set shape could not be determined by introspection"
+    if resultset.get("error"):
+        desc += f": {resultset['error']}"
+    return {"type": "object", "description": desc}
 
 
 # Authentication modes the SQL Server *engine* itself accepts for a
@@ -535,59 +567,242 @@ def build_security(version: str) -> tuple[dict, list]:
     return schemes, security
 
 
+# --- Cross-version presence ------------------------------------------------
+
+def discover_versions(data_root: Path) -> list[str]:
+    if not data_root.exists():
+        return []
+    return sorted(p.name for p in data_root.iterdir() if p.is_dir())
+
+
+def compute_presence(data_root: Path) -> tuple[dict[tuple[str, str, str], set[str]], int]:
+    """For every version with extracted data sitting in data/<version>/,
+    which (schema, name, type) identities exist in ANY of master/msdb/model.
+    Used by rank_key() to prefer operations that exist across as many
+    versions as possible, so the top-{TOP_N_PER_VERSION} cut lands on
+    roughly the same operation set on every version -- a prompt/workflow
+    written against one version's generated tools keeps working when
+    switched to another, instead of hitting an operation that only survived
+    the rank cut on some versions. This only helps when every version's
+    data/<version>/ has already been extracted before generation runs (see
+    scripts/regenerate_mcp_server.sh's ordering); with only one version's
+    data present, every object's presence count is trivially 1 and ranking
+    degrades to metadata-completeness-first, same as before this existed.
+    """
+    versions = discover_versions(data_root)
+    presence: dict[tuple[str, str, str], set[str]] = {}
+    for v in versions:
+        seen_this_version: set[tuple[str, str, str]] = set()
+        for db in DATABASES:
+            for obj in load_json_dump(data_root / v / f"{db}.objects.json"):
+                seen_this_version.add((obj["schema_name"], obj["object_name"], obj["object_type_desc"]))
+        for key in seen_this_version:
+            presence.setdefault(key, set()).add(v)
+    return presence, len(versions)
+
+
+# --- Cross-database merge/dedup -------------------------------------------
+
+# Object-type tier for ranking (build_operations()/rank_key()): stored
+# procedures first (the most directly "operation"-shaped, and most system
+# procs are what this project's users actually want to call), then
+# functions, then views (catalog views/INFORMATION_SCHEMA/DMVs -- queryable,
+# but read-only metadata surfaces rather than callable operations).
+_TYPE_TIER = {
+    "SQL_STORED_PROCEDURE": 0,
+    "CLR_STORED_PROCEDURE": 0,
+    "EXTENDED_STORED_PROCEDURE": 0,
+    "SQL_SCALAR_FUNCTION": 1,
+    "SQL_INLINE_TABLE_VALUED_FUNCTION": 1,
+    "SQL_TABLE_VALUED_FUNCTION": 1,
+    "CLR_SCALAR_FUNCTION": 1,
+    "CLR_TABLE_VALUED_FUNCTION": 1,
+    "VIEW": 2,
+}
+
+
+def first_nonempty(candidates: list[list[dict]]) -> list[dict]:
+    for c in candidates:
+        if c:
+            return c
+    return []
+
+
+def candidate_resultset_tier(rows: list[dict] | None, fmtonly: dict | None) -> tuple[int, dict]:
+    """Rank one database's resultset evidence for a single object, highest
+    tier first: 4 = fully typed (sys.dm_exec_describe_first_result_set
+    succeeded AND at least one described column actually has a name --
+    resultset.sql inserts a 'described' row whenever the describe call
+    returned *any* rows, but for some extended stored procedures it returns
+    row(s) with a NULL column_name/ordinal instead of failing outright
+    (observed live: `sp_executesql`, an EXTENDED_STORED_PROCEDURE, "described"
+    two anonymous columns) -- FOR JSON PATH drops NULL-valued keys entirely,
+    so those rows arrive here with no "column_name" key at all, and without
+    this check they'd be misread as real columns), 3 = column names only
+    (the resultset_fmtonly.sql fallback succeeded where the primary pass
+    didn't), 2 = confirmed no result set, 1 = introspection failed (status
+    'unknown'), 0 = no evidence at all for this database.
+    """
+    status = rows[0].get("result_set_status") if rows else None
+    if status == "described" and any(r.get("column_name") for r in rows):
+        return 4, {"tier": "described", "rows": rows}
+    if fmtonly and fmtonly.get("columns"):
+        return 3, {"tier": "fmtonly", "columns": fmtonly["columns"]}
+    if status == "no_result_set" or status == "described":
+        return 2, {"tier": "no_result_set"}
+    if status == "unknown":
+        return 1, {"tier": "unknown", "error": rows[0].get("error_message") if rows else None}
+    return 0, {"tier": "unknown", "error": None}
+
+
+def choose_best_resultset(candidates: dict[str, dict]) -> dict:
+    best_rank = -1
+    best: dict = {"tier": "unknown", "error": None}
+    for db in DATABASES:
+        c = candidates.get(db)
+        if not c:
+            continue
+        rank, info = candidate_resultset_tier(c.get("resultset_rows"), c.get("fmtonly"))
+        if rank > best_rank:
+            best_rank, best = rank, info
+    return best
+
+
+def build_operations(version: str, data_dir: Path) -> tuple[list[dict], int]:
+    """Load master/msdb/model EDA output, deduplicate objects that appear
+    identically in more than one database into a single operation each (see
+    README's "OpenAPI mapping convention" for why -- there won't be many
+    same-path collisions, and where they exist they're the same system
+    object, not a real conflict), and drop extended stored procedures this
+    pipeline found no way to document at all. Returns
+    (operations_not_yet_ranked, extended_procs_dropped_count).
+    """
+    registry: dict[tuple[str, str, str], dict] = {}
+
+    for db in DATABASES:
+        objects = load_json_dump(data_dir / f"{db}.objects.json")
+        params = load_json_dump(data_dir / f"{db}.params.json")
+        resultsets = load_json_dump(data_dir / f"{db}.resultset.json")
+        fmtonly = load_fmtonly_dump(data_dir / f"{db}.resultset_fmtonly.txt")
+
+        params_by_object: dict[tuple[str, str], list[dict]] = {}
+        for p in params:
+            params_by_object.setdefault((p["schema_name"], p["object_name"]), []).append(p)
+
+        resultset_by_object: dict[tuple[str, str], list[dict]] = {}
+        for r in resultsets:
+            resultset_by_object.setdefault((r["schema_name"], r["object_name"]), []).append(r)
+
+        for obj in objects:
+            key = (obj["schema_name"], obj["object_name"], obj["object_type_desc"])
+            entry = registry.setdefault(key, {"object": obj, "databases": [], "candidates": {}})
+            entry["databases"].append(db)
+            object_key = (obj["schema_name"], obj["object_name"])
+            entry["candidates"][db] = {
+                "params": params_by_object.get(object_key, []),
+                "resultset_rows": resultset_by_object.get(object_key),
+                "fmtonly": fmtonly.get(object_key),
+            }
+
+    operations = []
+    extended_dropped = 0
+    for (schema_name, name, type_desc), entry in registry.items():
+        databases = entry["databases"]
+        params = first_nonempty([entry["candidates"][db]["params"] for db in DATABASES if db in entry["candidates"]])
+        resultset = choose_best_resultset(entry["candidates"])
+
+        has_columns = resultset["tier"] in ("described", "fmtonly")
+        if type_desc == "EXTENDED_STORED_PROCEDURE" and not params and not has_columns:
+            # No sys.all_parameters rows (extended procs are opaque compiled
+            # DLLs, not catalogued like a T-SQL/CLR object) and neither
+            # introspection method recovered any columns either -- there is
+            # nothing real to document, so this operation is left out
+            # entirely rather than emitted parameterless/columnless, per the
+            # brief for this rewrite.
+            extended_dropped += 1
+            continue
+
+        operations.append({
+            "schema_name": schema_name,
+            "name": name,
+            "type_desc": type_desc,
+            "databases": sorted(databases),
+            "params": params,
+            "resultset": resultset,
+            "has_params": bool([p for p in params if not p.get("is_output")]),
+            "has_columns": has_columns,
+        })
+
+    return operations, extended_dropped
+
+
+def rank_key(op: dict) -> tuple:
+    """Primary: cross-version presence (see compute_presence()) -- an
+    operation that exists on every extracted version ranks ahead of one that
+    only exists on some, so the top-{TOP_N_PER_VERSION} cut is as similar as
+    possible across versions and prompts/workflows built against it keep
+    working regardless of which version is active. Secondary: metadata
+    completeness (has both real params and real columns ranks best, neither
+    ranks worst). Tertiary: object-type tier (procs > functions > views).
+    Quaternary: alphabetical, for a stable/reviewable ordering among
+    equally-ranked operations.
+    """
+    presence_rank = -op.get("presence_count", 1)
+    if op["has_params"] and op["has_columns"]:
+        completeness = 0
+    elif op["has_columns"]:
+        completeness = 1
+    elif op["has_params"]:
+        completeness = 2
+    else:
+        completeness = 3
+    type_tier = _TYPE_TIER.get(op["type_desc"], 3)
+    return (presence_rank, completeness, type_tier, op["schema_name"], op["name"])
+
+
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(1)
-    version, db = sys.argv[1], sys.argv[2]
+    version = sys.argv[1]
 
     data_dir = ROOT / "data" / version
-    objects = load_json_dump(data_dir / f"{db}.objects.json")
-    params = load_json_dump(data_dir / f"{db}.params.json")
-    resultsets = load_json_dump(data_dir / f"{db}.resultset.json")
+    operations, extended_dropped = build_operations(version, data_dir)
 
-    params_by_object: dict[tuple[str, str], list[dict]] = {}
-    for p in params:
-        key = (p["schema_name"], p["object_name"])
-        params_by_object.setdefault(key, []).append(p)
+    presence, versions_scanned = compute_presence(ROOT / "data")
+    for op in operations:
+        key = (op["schema_name"], op["name"], op["type_desc"])
+        op["presence_count"] = len(presence.get(key, {version}))
 
-    resultset_by_object: dict[tuple[str, str], list[dict]] = {}
-    for r in resultsets:
-        key = (r["schema_name"], r["object_name"])
-        resultset_by_object.setdefault(key, []).append(r)
+    operations.sort(key=rank_key)
+    total_ranked = len(operations)
+    kept = operations[:TOP_N_PER_VERSION]
+    dropped_by_rank = total_ranked - len(kept)
 
     paths: dict = {}
     schemas: dict = {SQL_ERROR_SCHEMA_NAME: SQL_ERROR_SCHEMA}
     error_responses = build_error_responses()
+    path_collisions = 0
 
-    for obj in sorted(objects, key=lambda o: (o["schema_name"], o["object_name"])):
-        schema_name = obj["schema_name"]
-        name = obj["object_name"]
-        type_desc = obj["object_type_desc"]
-        key = (schema_name, name)
+    for op in kept:
+        schema_name, name, type_desc = op["schema_name"], op["name"], op["type_desc"]
+        path = f"/{schema_name}/{name}"
+        if path in paths:
+            # Same schema+name but a different object_type_desc across
+            # databases (e.g. a view in one database, a proc of the same
+            # name in another) -- vanishingly rare for system-shipped
+            # objects, but paths/operationIds only encode schema+name, so a
+            # second entry here would silently clobber the first. Keep
+            # whichever sorted earlier (already the better-ranked one, since
+            # `kept` is rank-ordered) and drop this one instead of losing an
+            # operation to a silent dict overwrite.
+            path_collisions += 1
+            continue
         op_id = f"{schema_name}_{name}"
 
-        obj_params = params_by_object.get(key, [])
-        params_are_curated = False
-        if not obj_params and name in CURATED_PARAMETERS:
-            obj_params = CURATED_PARAMETERS[name]["params"]
-            params_are_curated = True
-        request_schema = build_request_schema(obj_params)
-        output_param_schema = build_output_param_schema(obj_params)
-        response_schema = build_response_schema(resultset_by_object.get(key))
-
-        if params_are_curated:
-            source_note = (
-                "Hand-curated from Microsoft Learn, not from live introspection -- "
-                "sys.all_parameters has no rows for this object (it's an "
-                "EXTENDED_STORED_PROCEDURE whose calling convention is hardcoded into "
-                "the query processor). See README limitations."
-            )
-            extra_note = CURATED_PARAMETERS[name].get("note")
-            for schema in (request_schema, output_param_schema):
-                if schema is not None:
-                    schema["x-sql-params-source"] = "hand-curated"
-                    schema["description"] = source_note + (f" {extra_note}" if extra_note else "")
+        request_schema = build_request_schema(op["params"], op["databases"])
+        output_param_schema = build_output_param_schema(op["params"])
+        response_schema = build_response_schema(op["resultset"])
 
         operation: dict = {
             "operationId": op_id,
@@ -605,10 +820,13 @@ def main() -> None:
             # free-text wording. See docs/sqlserver-eda-openapi-pipeline
             # README's "OpenAPI mapping convention".
             "description": type_desc,
-            # Redundant with the path/operationId, but explicit fields save
-            # tooling from having to parse schema/database back out of a
-            # string -- same rationale as x-sql-type.
-            "x-sql-database": db,
+            # Redundant with build_request_schema()'s EXECUTION_DATABASE_PARAM
+            # description, but explicit fields save tooling from having to
+            # parse prose -- same rationale as x-sql-type. Unlike the old
+            # per-database x-sql-database (singular), this is now a list:
+            # this operation is documented once, and may exist identically
+            # in more than one of master/msdb/model.
+            "x-sql-databases": op["databases"],
             "x-sql-schema": schema_name,
             "responses": {
                 "200": {
@@ -623,12 +841,14 @@ def main() -> None:
             },
         }
 
-        if request_schema is not None:
-            schema_key = f"{op_id}_Request"
-            schemas[schema_key] = request_schema
-            operation["requestBody"] = {
-                "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{schema_key}"}}}
-            }
+        # Every operation now has a requestBody (the synthetic
+        # EXECUTION_DATABASE_PARAM guarantees request_schema is never empty)
+        # -- see build_request_schema()'s doc comment.
+        schema_key = f"{op_id}_Request"
+        schemas[schema_key] = request_schema
+        operation["requestBody"] = {
+            "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{schema_key}"}}}
+        }
 
         if output_param_schema is not None:
             schema_key = f"{op_id}_OutputParams"
@@ -640,21 +860,28 @@ def main() -> None:
                 }
             }
 
-        paths[f"/{schema_name}/{name}"] = {"post": operation}
+        paths[path] = {"post": operation}
 
     security_schemes, security = build_security(version)
 
     doc = {
         "openapi": "3.1.0",
         "info": {
-            "title": f"SQL Server {version} - {db} system object catalog",
+            "title": f"SQL Server {version} - master/msdb/model combined catalog",
             "version": str(version),
             "description": (
-                f"Synthetic OpenAPI representation of curated system stored procedures, "
-                f"functions, and catalog views in the '{db}' database on SQL Server {version}, "
-                f"generated by introspecting a live instance. Each path is a synthetic POST "
-                f"operation (SQL objects are not HTTP resources) -- see README for the mapping "
-                f"convention and known limitations. `security` lists the TDS-protocol "
+                f"Synthetic OpenAPI representation of system-shipped (is_ms_shipped = 1) stored "
+                f"procedures, functions, and views found across the 'master', 'msdb', and 'model' "
+                f"databases on SQL Server {version}, generated by introspecting a live instance and "
+                f"deduplicating objects that appear identically in more than one of those databases "
+                f"(see each operation's `x-sql-databases`). Ranked primarily by how many extracted "
+                f"SQL Server versions (2017/2019/2022/2025) an operation exists on -- so the "
+                f"top-{TOP_N_PER_VERSION} cut lands on roughly the same operation set across "
+                f"versions -- then by metadata completeness; see tools/generate_openapi.py's "
+                f"rank_key()/compute_presence(). Each path is a synthetic POST operation (SQL objects are not HTTP "
+                f"resources) -- see README for the mapping convention and known limitations. Every "
+                f"operation carries an optional `{EXECUTION_DATABASE_PARAM}` request property "
+                f"documenting which database to run it against; `security` lists the TDS-protocol "
                 f"authentication modes this engine version accepts (mapped to the closest-fitting "
                 f"OpenAPI securityScheme shape, not a real HTTP auth flow)."
             ),
@@ -666,11 +893,18 @@ def main() -> None:
 
     out_dir = ROOT / "openapi" / version
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{db}.yaml"
+    out_path = out_dir / "combined.yaml"
     with out_path.open("w", encoding="utf-8") as f:
         yaml.dump(doc, f, sort_keys=False, allow_unicode=True, width=100)
 
-    print(f"wrote {out_path} ({len(paths)} operations, {len(schemas)} schemas)")
+    print(
+        f"wrote {out_path} ({len(paths)} operations, {len(schemas)} schemas) -- "
+        f"{total_ranked} candidates after dedup, {dropped_by_rank} ranked out beyond top "
+        f"{TOP_N_PER_VERSION}, {extended_dropped} extended stored procedures dropped "
+        f"(no introspectable params/columns), {path_collisions} path collisions dropped, "
+        f"ranked against {versions_scanned} version(s) of data/ present for cross-version "
+        f"presence (see compute_presence())"
+    )
 
 
 if __name__ == "__main__":

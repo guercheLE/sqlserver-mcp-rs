@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 # Regenerates the sqlserver-mcp-rs project's OpenAPI specs and mcpify-managed
-# scaffolding from the raw EDA JSON dumps already sitting in data/<version>/
-# (no Docker/live SQL Server instance required for this script itself --
-# see scripts/extract.sh for the step that actually populates data/).
+# scaffolding from the raw EDA extraction output already sitting in
+# data/<version>/ (no Docker/live SQL Server instance required for this
+# script itself -- see scripts/extract.sh for the step that actually
+# populates data/).
+#
+# IMPORTANT: this script always extracts+generates ALL FOUR versions before
+# touching mcpify -- never call tools/generate_openapi.py for a single
+# version in isolation as part of a real regeneration. Its ranking prefers
+# operations that exist on every extracted version (see
+# tools/generate_openapi.py's compute_presence()) precisely so the top-500
+# cut lands on nearly the same operation set on 2017/2019/2022/2025 alike;
+# that only works when data/<version>/ already has all four versions'
+# EDA output on disk *before* generation runs for any of them.
 #
 # Runs, in order, for every version (2017/2019/2022/2025):
-#   1. tools/generate_openapi.py <version> {master,msdb,sandbox}
-#      -- per-database synthetic OpenAPI specs.
-#   2. tools/merge_openapi.py <version>
-#      -- merges the three into openapi/<version>/combined.yaml (see that
-#         script's own module docstring for why the merge is needed: the
-#         three per-database specs reuse identical paths/operationIds, so
-#         master/msdb/sandbox couldn't otherwise coexist as one mcpify
-#         project version).
-#   3. openapi-spec-validator against the merged result.
+#   1. tools/generate_openapi.py <version>
+#      -- loads master/msdb/model EDA output together, deduplicates objects
+#         found in more than one of those databases into a single operation
+#         each, ranks (cross-version presence, then metadata completeness),
+#         caps to the top 500, and writes openapi/<version>/combined.yaml
+#         directly (no separate merge step -- unlike the old per-database +
+#         merge design, deduplicated operations don't need database-prefixed
+#         paths to stay disjoint).
+#   2. openapi-spec-validator against the generated result.
 # Then, once, from the repo root:
-#   4. `mcpify sync --manifest mcpify.yaml`
+#   3. `mcpify sync --manifest mcpify.yaml`
 #      -- regenerates the Rust project's mcpify-managed scaffolding
 #         (mcp_store*.db.zst, src/validation/generated_schemas*.json.zst,
 #         and the marker-delimited "version-aware" regions in a handful of
@@ -62,13 +72,8 @@ fi
 source .venv/bin/activate
 
 for version in "${VERSIONS[@]}"; do
-  echo "== $version: generating per-database specs =="
-  for db in master msdb sandbox; do
-    python3 tools/generate_openapi.py "$version" "$db"
-  done
-
-  echo "== $version: merging into combined.yaml =="
-  python3 tools/merge_openapi.py "$version"
+  echo "== $version: generating combined.yaml (master/msdb/model, deduplicated) =="
+  python3 tools/generate_openapi.py "$version"
   openapi-spec-validator "openapi/$version/combined.yaml"
 done
 
