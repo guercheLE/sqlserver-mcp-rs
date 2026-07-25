@@ -60,9 +60,193 @@ These were requested in follow-up conversation, after the pipeline above was bui
 
 8. **Hand-curated parameters for 7 core engine procs** — the user noticed most paths document only `responses`, no request parameters, and asked whether `sp_help` could recover the missing ones for `sp_executesql`. Investigation (against a live SQL Server 2022 container) found: 183/246 `master` objects are `VIEW`s (genuinely parameterless — expected, not a bug); but 10 are `EXTENDED_STORED_PROCEDURE`s with zero rows in `sys.all_parameters`, 7 of which are important, well-documented system procs (`sp_executesql`, `sp_prepare`, `sp_execute`, `sp_unprepare`, `sp_describe_first_result_set`, `sp_describe_undeclared_parameters`, `sp_set_session_context`). Tested `sp_help` directly against the same container: it shows a parameter section for a regular proc like `sp_who` but only the bare header (no parameters) for `sp_executesql`/`xp_cmdshell` — confirming `sp_help` pulls from the exact same catalog we already query, so it can't recover anything sys.parameters doesn't have. Fetched all 7 signatures from Microsoft Learn (URLs in `tools/generate_openapi.py`'s `CURATED_PARAMETERS` comment) and hand-encoded them, including resolving two internal doc inconsistencies (`sp_prepare`'s prose mislabels `params` as OUTPUT, contradicted by its own example; `sp_execute`'s syntax box shows `handle OUTPUT`, contradicted by its argument description and example) by following the working examples. Every curated schema is tagged `x-sql-params-source: hand-curated` so it's distinguishable from live-introspected ones; variadic parameters (`sp_executesql`'s `@param1..N`, `sp_execute`'s `bound_param`) aren't statically enumerable and are called out in the schema description instead. Caught and fixed a second bug during this: curated default values were stored as strings (`"0"`) but the declared JSON schema `type` is `integer`/`boolean`, which `openapi-spec-validator` correctly rejected (`'0' is not of type 'integer'`) — fixed by using properly-typed Python values (`0`, `False`).
 
-## Verification performed
+## Verification performed (initial implementation, superseded by the rewrite below)
 
 1. Brought up each of the 4 containers in turn (`scripts/up.sh <version>`), ran the full extraction (`scripts/extract.sh <version>`) across `master`/`msdb`/`sandbox`, generated OpenAPI (`tools/generate_openapi.py <version> <db>`), and validated every output file with `openapi-spec-validator`. All 12 files (3 databases × 4 versions) validate cleanly.
 2. Spot-checked real generated content: `sp_who`'s actual result-set columns, `sys.dm_os_sys_info`'s real DMV shape, `sp_add_job`/`sp_add_schedule` correctly classified as `no_result_set`.
 3. Confirmed object counts increase monotonically with version (2017: 223 master operations → 2019: 237 → 2022: 246 → 2025: 263), consistent with each release only adding to the curated surface.
 4. Confirmed security schemes differ correctly by version (`azureADAuth` present only in 2022/2025 output).
+
+## Rewrite (2026-07-25): operations extraction rebuilt from scratch
+
+Requested from scratch, based on three prior research conversations (T-SQL
+`SET FMTONLY ON`/`sp_describe_first_result_set`/`SET NOEXEC`; a cross-database
+common/exclusive object query for `master`/`msdb`/`model` via
+`sys.all_objects`; and extended-stored-procedure parameter discovery,
+including `is_ms_shipped`'s meaning). Scope and ranking were confirmed with
+the user before implementation (broad `is_ms_shipped` sweep over the curated
+allowlist; metadata-completeness-first ranking; live re-extraction across all
+four versions) — see the session transcript for the full exchange. Changes
+from the original design above:
+
+1. **`sandbox` → `model`.** `model` is a real, always-present SQL Server
+   system database (the template new user databases are created from) — the
+   closest thing to a generic "non-system user database" guaranteed to exist
+   on every instance, and requires no `CREATE DATABASE` step unlike the old
+   ad hoc `sandbox` placeholder.
+
+2. **Curated allowlist dropped for a broad `is_ms_shipped = 1` sweep.**
+   `sql/eda/allowlist.yaml`/`allowlist_names.sql`/`allowlist_patterns.sql`
+   are gone. `objects.sql`/`params.sql`/`resultset.sql`/`version_diff.sql`
+   now match every system-shipped procedure/function/view directly, across a
+   fixed object-type set (`P`, `PC`, `X`, `FN`, `IF`, `TF`, `FS`, `FT`, `V`).
+   This turns up far more candidates than are useful (SQL Server ships
+   thousands of internal system objects) — hence ranking + a top-500 cutoff,
+   see below.
+
+3. **`SET FMTONLY ON` fallback (`sql/eda/resultset_fmtonly.sql`, new).**
+   `resultset.sql`'s primary method (`sys.dm_exec_describe_first_result_set`,
+   pure static analysis) still fails for some objects (e.g. result sets built
+   from temp tables). For those, a second pass attempts `SET FMTONLY ON`,
+   which genuinely compiles/partially runs the statement without altering
+   data (Microsoft's own documented guarantee) — deliberately excluded for
+   extended stored procedures (type `X`) since that guarantee doesn't cover
+   what a compiled DLL's code might actually do. There is no server-side way
+   to capture FMTONLY's column metadata (it's a wire-protocol response to the
+   connecting client, not queryable from within the T-SQL session), so this
+   script leans on sqlcmd's own text rendering of the (empty, zero-row)
+   result set's header line, split on whitespace for column names (SQL
+   Server identifiers can never contain spaces) — names only, no types,
+   tagged `x-sql-columns-source: fmtonly` downstream. Verified live against a
+   2025 container before scaling out: discovered mid-implementation that the
+   `-y 0 -Y 0` flags used elsewhere in the pipeline (to avoid truncating the
+   giant FOR JSON strings) unexpectedly suppress sqlcmd's header/dashes
+   rendering entirely for this script's plain-text output, so
+   `resultset_fmtonly.sql`'s `sqlcmd` invocation deliberately omits them.
+
+4. **Extended stored procedures with no introspectable data are dropped
+   entirely**, not hand-curated. The previous `CURATED_PARAMETERS` dict
+   (Microsoft-Learn-sourced signatures for `sp_executesql`/`sp_prepare`/
+   `sp_execute`/`sp_unprepare`/`sp_describe_first_result_set`/
+   `sp_describe_undeclared_parameters`/`sp_set_session_context`) is removed.
+   If neither `sys.dm_exec_describe_first_result_set` nor FMTONLY recovered
+   any real columns for an `EXTENDED_STORED_PROCEDURE`-typed object with zero
+   `sys.all_parameters` rows, `tools/generate_openapi.py`'s
+   `build_operations()` leaves it out of the generated spec rather than
+   emitting it parameterless/columnless.
+
+5. **One path per operation, not one per database.** The old design
+   database-prefixed every path/operationId (`/master/sys/sp_who`,
+   `/msdb/sys/sp_who`, ...) specifically so three per-database specs could
+   merge without colliding. `tools/generate_openapi.py` now loads
+   `master`/`msdb`/`model` together and deduplicates objects that appear
+   identically in more than one (by schema+name+type) into a single `/
+   <schema>/<name>` operation, recording which database(s) it was found in
+   on `x-sql-databases` (a list). `tools/merge_openapi.py` is deleted —
+   there's nothing left to merge.
+
+6. **Ranked, capped to the top 500 operations per version.** Primary sort:
+   cross-version presence — added mid-session at the user's request ("keep
+   the top 500 as similar as possible on all versions so that workflows work
+   on all versions"), via `compute_presence()` scanning every extracted
+   version's `data/<version>/*.objects.json` for the same schema+name+type
+   identity, so a prompt/workflow built against one version's tool set keeps
+   working when switched to another. Secondary: metadata completeness (real
+   params + real columns > columns-only > params-only > neither). Tertiary:
+   object-type tier (procs > functions > views). Quaternary: alphabetical.
+   This only works as intended when every version has already been extracted
+   before generation runs for any of them —
+   `scripts/regenerate_mcp_server.sh` was reordered/commented accordingly.
+
+7. **Synthetic `execution_database` request parameter on every operation.**
+   Deduplication means one operation can now represent the same object in
+   more than one database, so which one to actually hit against has to be
+   resolved per call rather than baked into the operation at generation
+   time. Every generated operation gets an optional `execution_database`
+   request-body property (`tools/generate_openapi.py`'s
+   `build_request_schema()`) — real request-schema property, not a
+   `x-sql-...` vendor extension, because mcpify's generated store doesn't
+   carry vendor extensions through into the schemas it validates calls
+   against. Resolution order at call time
+   (`services::api_client::resolve_execution_database`): the caller's
+   `execution_database` body value, else the operator's configured
+   `Config::default_database` (new, hand-added field — optional, settable at
+   `sqlserver-mcp setup` via a new wizard prompt, or via
+   `SQLSERVER_DEFAULT_DATABASE`/`default_database` config), else the live
+   connection's own current database context (`DB_NAME()`/`DB_ID()`) — no
+   qualification at all, two-part `schema.name`. This subsumes and
+   generalizes the old design's `sandbox`-only `database` override argument
+   (which was an undocumented sibling of `body`, not a real schema property,
+   and only applied to `sandbox`-tagged operations — `master`/`msdb`
+   operations always went out three-part-qualified with a literal database
+   name before). `endpoint.path` accordingly shrank from
+   `/<db>/<schema>/<name>` to `/<schema>/<name>`
+   (`services::api_client::parse_path`), and `build_statement` no longer
+   takes a `db` argument at all — every operation now behaves the way only
+   `sandbox`-tagged ones used to.
+
+## Verification performed (rewrite)
+
+1. Smoke-tested the FMTONLY text-capture approach live against a 2025
+   container before writing `resultset_fmtonly.sql`'s Python parser —
+   confirmed sqlcmd does print a header + dashes line for a zero-row FMTONLY
+   result set, but only without `-y 0`/`-Y 0` (see item 3 above).
+2. `cargo check --all-targets` and `cargo test --lib services::api_client`
+   (23/23 passing) after the `parse_path`/`build_statement`/
+   `resolve_execution_database` rewrite, before re-running the live
+   extraction+generation+`mcpify sync` pipeline end-to-end across all four
+   versions.
+3. Full live extraction across all four versions (`master`/`msdb`/`model`),
+   using the fixed scripts. Candidates after dedup, before the top-500 cut:
+   2017: 2,647 (186 extended procs dropped); 2019: 2,713 (208 dropped);
+   2022: 2,815 (298 dropped); 2025: 2,885 (358 dropped) — consistent with
+   each release only adding to the system-shipped surface, same monotonic
+   pattern as the original implementation's curated-allowlist numbers.
+4. Cross-version presence ranking achieved its goal: of each version's 500
+   generated operations, 495 are identical across all four versions (only 5
+   version-specific slots each) -- verified by loading all four
+   `combined.yaml` files and diffing their path sets.
+5. All four `openapi/<version>/combined.yaml` files validate cleanly with
+   `openapi-spec-validator`.
+6. **`mcpify sync --manifest mcpify.yaml` is the wrong command for this kind
+   of update and must not be used for routine catalog refreshes** -- unlike
+   `mcpify add-version --force` (used successfully in the July 21 commit
+   above, touching only 6 files: `.mcpify/versions.json`, the 4 `mcp_store*
+   .db.zst` binaries, and a 10-line `src/data/store.rs` diff), `sync`
+   regenerates the *entire* project's scaffolding from the manifest as if
+   from a blank slate, discovered live this session: it reset
+   `AuthMethod`/`Config`/the setup wizard/`api_client.rs` to mcpify's
+   generic Basic/OAuth2/reqwest-HTTP template (losing the hand-rewritten
+   TDS/SQL-Server-specific auth and transport layer entirely) and created
+   several brand-new generic scaffolding files that don't belong in this
+   project (`src/auth/strategies/basic.rs`, `src/core/api_url_builder.rs`,
+   `src/http/auth_extractor.rs`, an `examples/` directory, ...) -- mcpify's
+   auth-scheme classifier has *never* been able to derive Rust variant names
+   like `SqlServer`/`Windows`/`AzureAd` from spec scheme keys like `sqlAuth`
+   (confirmed by reading mcpify's own source,
+   `src/targets/rust/context.rs`'s `auth_method_variant_name` — it's a
+   closed match over 5 generic literals, not name-derived at all), so this
+   project's entire custom auth naming has always been a hand-edit
+   reapplied after generation, but `sync` goes much further than just that
+   by also regenerating dozens of other hand-tailored files back to generic
+   HTTP-client scaffolding. Recovered by reverting every touched file to
+   `HEAD` (git had zero uncommitted changes before this session started),
+   deleting the new generic files, and reapplying this session's actual
+   intended hand-edits from a saved patch, then using `mcpify add-version
+   --project . --version <v> --input openapi/<v>/combined.yaml --force`
+   (`--set-default` for 2025) per version instead -- confirmed to touch only
+   the expected files (version ledger, that version's compiled store, that
+   version's schema bundle, plus the pre-existing `// mcpify:versions:...`
+   marker regions). `scripts/regenerate_mcp_server.sh` still documents
+   `sync`; it should be corrected to use `add-version --force` per version
+   in a follow-up, since as written it would reproduce this exact regression
+   for anyone who actually runs it.
+7. `cargo build --all-targets` and `cargo test` (118 tests: 112 lib unit
+   tests + 1 main.rs test + 5 CLI integration tests + 1 explicitly-run
+   `--ignored` embeddings test) all pass after recovery.
+   `./target/release/sqlserver-mcp-populate-embeddings --all` repopulated
+   `semantic_endpoints` for all 4 versions (500 rows each, matching
+   `endpoints`).
+8. `scripts/coverage.sh` (`cargo llvm-cov`): **65.01% total line coverage**,
+   short of the project's 85% target. This is a pre-existing gap, not one
+   this rewrite introduced: every 0%-covered file (`tools/call_tool.rs`,
+   `tools/get_tool.rs`, `tools/search_tool.rs`, `services/sql_pool.rs`,
+   `services/embedding_service.rs`, `cli/setup_wizard.rs`,
+   `bin/populate_embeddings.rs`, `core/otel.rs`, ...) is either untouched by
+   this session's changes or is interactive/live-connection code this
+   project has never had unit tests for. The one file this rewrite changed
+   most heavily, `services/api_client.rs`, sits at 77.46% line coverage on
+   its own. Closing the project-wide gap to 85% is a separate, substantially
+   larger testing-infrastructure effort (mocking or live-instance testing
+   for the tool-dispatch/connection-pooling/embedding-service/CLI-wizard
+   layers) than this rewrite's scope.
