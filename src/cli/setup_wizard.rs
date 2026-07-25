@@ -26,19 +26,44 @@ async fn prompt_base_url() -> anyhow::Result<String> {
     .map_err(anyhow::Error::from)
 }
 
+/// The "windows" choice's display label is deliberately more explicit than
+/// the underlying `auth_method: windows` config value it maps to (kept
+/// unchanged for config-file/env-var backward compatibility -- existing
+/// `SQLSERVER_AUTH_METHOD=windows` deployments must keep working). Users
+/// coming from SSMS/everyday SQL Server tooling expect "Windows
+/// Authentication" to mean passwordless single sign-on via the OS's current
+/// login (SSPI passthrough) -- this mode is NOT that. It's
+/// `tiberius::AuthMethod::windows(user, password)`: NTLM with an explicit
+/// domain\username and password, prompted for below just like SQL Server
+/// auth. True SSPI/Kerberos passthrough (`tiberius::AuthMethod::Integrated`)
+/// isn't wired up in this project at all yet -- see
+/// `auth::auth_manager::windows_auth_method`'s doc comment.
+const AUTH_METHOD_CHOICES: [&str; 3] = [
+    "sql_server",
+    "windows (NTLM -- explicit domain\\username + password, NOT single sign-on)",
+    "azure_ad",
+];
+
+/// Pulled out of `prompt_auth_method` so the selection-parsing logic is
+/// unit-testable without going through `inquire`'s interactive prompt.
+fn parse_auth_method_selection(selection: &str) -> anyhow::Result<AuthMethod> {
+    if selection == "sql_server" {
+        Ok(AuthMethod::SqlServer)
+    } else if selection.starts_with("windows") {
+        Ok(AuthMethod::Windows)
+    } else if selection == "azure_ad" {
+        Ok(AuthMethod::AzureAd)
+    } else {
+        anyhow::bail!("unexpected auth method selection '{selection}'")
+    }
+}
+
 async fn prompt_auth_method() -> anyhow::Result<AuthMethod> {
-    let choices = vec!["sql_server", "windows", "azure_ad"];
-    let selection = tokio::task::spawn_blocking(move || {
-        inquire::Select::new("Authentication method:", choices).prompt()
+    let selection = tokio::task::spawn_blocking(|| {
+        inquire::Select::new("Authentication method:", AUTH_METHOD_CHOICES.to_vec()).prompt()
     })
     .await??;
-
-    Ok(match selection {
-        "sql_server" => AuthMethod::SqlServer,
-        "windows" => AuthMethod::Windows,
-        "azure_ad" => AuthMethod::AzureAd,
-        other => anyhow::bail!("unexpected auth method selection '{other}'"),
-    })
+    parse_auth_method_selection(selection)
 }
 
 // mcpify:versions:begin
@@ -64,6 +89,14 @@ async fn prompt_api_version() -> anyhow::Result<String> {
 /// Purely a convenience default — left blank, a call with no
 /// `execution_database` falls through to the connection's own current
 /// database context.
+fn parse_default_database_answer(answer: String) -> Option<String> {
+    if answer.trim().is_empty() {
+        None
+    } else {
+        Some(answer)
+    }
+}
+
 async fn prompt_default_database() -> anyhow::Result<Option<String>> {
     let answer = tokio::task::spawn_blocking(|| {
         inquire::Text::new(
@@ -72,28 +105,32 @@ async fn prompt_default_database() -> anyhow::Result<Option<String>> {
         .prompt()
     })
     .await??;
-    Ok(if answer.trim().is_empty() {
-        None
-    } else {
-        Some(answer)
-    })
+    Ok(parse_default_database_answer(answer))
 }
 
-async fn prompt_transport() -> anyhow::Result<Transport> {
-    let choices = vec![
-        "stdio (spawned as a subprocess by the MCP client)",
-        "http (a standalone server the MCP client connects to over the network)",
-    ];
-    let selection = tokio::task::spawn_blocking(move || {
-        inquire::Select::new("Which transport will this deployment use?", choices).prompt()
-    })
-    .await??;
+const TRANSPORT_CHOICES: [&str; 2] = [
+    "stdio (spawned as a subprocess by the MCP client)",
+    "http (a standalone server the MCP client connects to over the network)",
+];
 
-    Ok(if selection.starts_with("stdio") {
+fn parse_transport_selection(selection: &str) -> Transport {
+    if selection.starts_with("stdio") {
         Transport::Stdio
     } else {
         Transport::Http
+    }
+}
+
+async fn prompt_transport() -> anyhow::Result<Transport> {
+    let selection = tokio::task::spawn_blocking(|| {
+        inquire::Select::new(
+            "Which transport will this deployment use?",
+            TRANSPORT_CHOICES.to_vec(),
+        )
+        .prompt()
     })
+    .await??;
+    Ok(parse_transport_selection(selection))
 }
 
 async fn prompt_credentials(auth_method: AuthMethod) -> anyhow::Result<HashMap<String, String>> {
@@ -113,9 +150,14 @@ async fn prompt_credentials(auth_method: AuthMethod) -> anyhow::Result<HashMap<S
                 );
             }
             AuthMethod::Windows => {
+                println!(
+                    "This is NTLM authentication with an explicit domain username and \
+                     password -- not passwordless Windows single sign-on. Your credentials \
+                     are sent to authenticate, the same as SQL Server auth."
+                );
                 credentials.insert(
                     "username".to_string(),
-                    inquire::Text::new("Windows username (optionally DOMAIN\\user):").prompt()?,
+                    inquire::Text::new("Windows domain username (DOMAIN\\user):").prompt()?,
                 );
                 credentials.insert(
                     "password".to_string(),
@@ -333,4 +375,82 @@ pub async fn run_setup_wizard() -> anyhow::Result<()> {
     };
     println!("Setup complete! Run: sqlserver-mcp {run_command}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_env_key_uppercases() {
+        assert_eq!(to_env_key("username"), "USERNAME");
+    }
+
+    #[test]
+    fn parse_auth_method_selection_matches_sql_server() {
+        assert_eq!(
+            parse_auth_method_selection("sql_server").unwrap(),
+            AuthMethod::SqlServer
+        );
+    }
+
+    #[test]
+    fn parse_auth_method_selection_matches_the_reworded_windows_label() {
+        assert_eq!(
+            parse_auth_method_selection(AUTH_METHOD_CHOICES[1]).unwrap(),
+            AuthMethod::Windows
+        );
+    }
+
+    #[test]
+    fn parse_auth_method_selection_matches_azure_ad() {
+        assert_eq!(
+            parse_auth_method_selection("azure_ad").unwrap(),
+            AuthMethod::AzureAd
+        );
+    }
+
+    #[test]
+    fn parse_auth_method_selection_rejects_an_unrecognized_choice() {
+        assert!(parse_auth_method_selection("something else").is_err());
+    }
+
+    #[test]
+    fn parse_transport_selection_matches_stdio_and_http() {
+        assert_eq!(
+            parse_transport_selection(TRANSPORT_CHOICES[0]),
+            Transport::Stdio
+        );
+        assert_eq!(
+            parse_transport_selection(TRANSPORT_CHOICES[1]),
+            Transport::Http
+        );
+    }
+
+    #[test]
+    fn parse_default_database_answer_treats_blank_as_none() {
+        assert_eq!(parse_default_database_answer("  ".to_string()), None);
+        assert_eq!(parse_default_database_answer(String::new()), None);
+    }
+
+    #[test]
+    fn parse_default_database_answer_keeps_a_real_value() {
+        assert_eq!(
+            parse_default_database_answer("reporting".to_string()),
+            Some("reporting".to_string())
+        );
+    }
+
+    #[test]
+    fn print_mcp_client_config_runs_for_stdio() {
+        let mut env = HashMap::new();
+        env.insert("SQLSERVER_URL".to_string(), "localhost".to_string());
+        print_mcp_client_config(Transport::Stdio, &env);
+    }
+
+    #[test]
+    fn print_mcp_client_config_runs_for_http() {
+        let env = HashMap::new();
+        print_mcp_client_config(Transport::Http, &env);
+    }
 }

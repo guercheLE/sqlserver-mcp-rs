@@ -222,4 +222,50 @@ mod tests {
         let mut manager = AuthManager::new(AuthMethod::SqlServer);
         assert!(manager.resolve_tds_auth().await.is_err());
     }
+
+    /// `tiberius::AuthMethod::windows` only exists on Windows targets (see
+    /// `windows_auth_method`'s doc comment) -- on every other target
+    /// (including wherever this test suite runs), the Windows arm of
+    /// `resolve_tds_auth` reaches real credentials successfully but then
+    /// hits the `#[cfg(not(windows))]` fallback, which bails with a clear,
+    /// actionable error rather than a panic or a silent wrong-auth
+    /// fallback. This is the behavior every non-Windows deployment of this
+    /// server actually has today.
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn resolve_tds_auth_reports_the_missing_sspi_binding_on_non_windows_targets() {
+        let mut manager = AuthManager::new(AuthMethod::Windows);
+        let mut credentials = Credentials::new();
+        credentials.insert("username".to_string(), "CORP\\alice".to_string());
+        credentials.insert("password".to_string(), "s3cr3t".to_string());
+        manager.set_credentials(credentials);
+        let err = manager.resolve_tds_auth().await.unwrap_err();
+        assert!(err.to_string().contains("native SSPI binding"));
+    }
+
+    #[test]
+    fn credentials_from_env_is_none_when_the_required_vars_are_unset() {
+        // Doesn't touch real env vars a developer/CI might have set for
+        // something else -- SQLSERVER_USERNAME/PASSWORD are this project's
+        // own namespaced vars, and this assertion only holds in a process
+        // where neither happens to already be exported (true for a plain
+        // `cargo test` invocation, which is the only context this runs in).
+        assert!(credentials_from_env(AuthMethod::SqlServer).is_none());
+        assert!(credentials_from_env(AuthMethod::AzureAd).is_none());
+    }
+
+    #[tokio::test]
+    async fn credentials_falls_back_past_seeded_credentials_that_fail_validation() {
+        // An empty username/password pair is seeded (fails
+        // `validate_credentials`), so `credentials()` must not just return
+        // it -- it should fall through to the env/stored-credential cascade
+        // and, finding nothing there either in this test environment,
+        // surface `NoActiveCredentials` rather than the invalid seeded pair.
+        let mut manager = AuthManager::new(AuthMethod::SqlServer);
+        let mut credentials = Credentials::new();
+        credentials.insert("username".to_string(), String::new());
+        credentials.insert("password".to_string(), String::new());
+        manager.set_credentials(credentials);
+        assert!(manager.credentials().await.is_err());
+    }
 }
