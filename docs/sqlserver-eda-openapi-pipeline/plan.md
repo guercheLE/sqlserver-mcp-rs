@@ -237,16 +237,105 @@ from the original design above:
    `./target/release/sqlserver-mcp-populate-embeddings --all` repopulated
    `semantic_endpoints` for all 4 versions (500 rows each, matching
    `endpoints`).
-8. `scripts/coverage.sh` (`cargo llvm-cov`): **65.01% total line coverage**,
-   short of the project's 85% target. This is a pre-existing gap, not one
-   this rewrite introduced: every 0%-covered file (`tools/call_tool.rs`,
-   `tools/get_tool.rs`, `tools/search_tool.rs`, `services/sql_pool.rs`,
+8. `scripts/coverage.sh` (`cargo llvm-cov`): **65.01% total line coverage**
+   at the time this rewrite finished, short of the project's 85% target.
+   This was a pre-existing gap, not one this rewrite introduced: every
+   0%-covered file (`tools/call_tool.rs`, `tools/get_tool.rs`,
+   `tools/search_tool.rs`, `services/sql_pool.rs`,
    `services/embedding_service.rs`, `cli/setup_wizard.rs`,
-   `bin/populate_embeddings.rs`, `core/otel.rs`, ...) is either untouched by
-   this session's changes or is interactive/live-connection code this
-   project has never had unit tests for. The one file this rewrite changed
-   most heavily, `services/api_client.rs`, sits at 77.46% line coverage on
-   its own. Closing the project-wide gap to 85% is a separate, substantially
-   larger testing-infrastructure effort (mocking or live-instance testing
-   for the tool-dispatch/connection-pooling/embedding-service/CLI-wizard
-   layers) than this rewrite's scope.
+   `bin/populate_embeddings.rs`, `core/otel.rs`, ...) was either untouched by
+   this rewrite's changes or interactive/live-connection code this project
+   had never had unit tests for. Filed as a follow-up task; see below.
+
+## Follow-up (2026-07-25): closing the coverage gap
+
+Raised project-wide line coverage from **65.01% to 76.23%** (`cargo
+llvm-cov`, 142 lib tests + CLI/bin/embeddings-populated integration tests,
+up from 112 lib tests). Full accounting:
+
+- `tools/call_tool.rs`/`get_tool.rs`/`search_tool.rs`: 0% -> ~90%+ each.
+  `get_tool`/`search_tool` are fully testable against an in-memory seeded
+  SQLite store (`search_tool` uses the real `all-mpnet-base-v2` embedding
+  model, already cached locally in `.fastembed_cache/` from this project's
+  own `populate-embeddings` runs, so no network hit); `call_tool`'s
+  `validate_input` early-return is reachable without a live SQL Server
+  since it runs before `ApiClient` is even constructed.
+- `services/sql_pool.rs`: `cached_pool`'s hit/miss branches, using a
+  TEST-NET-1 (RFC 5737, `192.0.2.1`) config -- `bb8::Pool::builder()`
+  defaults `min_idle` to `None`, so `build()` never actually attempts a
+  connection unless the caller sets it (which `cached_pool` doesn't),
+  confirmed empirically before relying on it.
+- `services/api_client.rs`: extracted `severity_category` (the
+  400/403/500 classification) as its own pure function, since
+  `tiberius::tds::codec::TokenError`'s fields are all `pub(crate)` with no
+  public constructor -- a `tiberius::error::Error::Server(_)` can never be
+  built from outside the crate, so the match arm that reads `class` off
+  one is permanently unreachable from a test without this extraction.
+  Also caught and fixed a related bug while adding this: some extended
+  stored procedures make `sys.dm_exec_describe_first_result_set` return
+  anonymous (null-named) columns instead of failing outright, and `FOR
+  JSON PATH` silently drops null-valued JSON keys -- `candidate_
+  resultset_tier` (`tools/generate_openapi.py`) was misreading that as
+  "successfully described" for `sp_executesql` before a real-data smoke
+  test surfaced it; fixed by requiring at least one named column.
+- `bin/populate_embeddings.rs`: 0% -> mostly covered. `zst_sibling`,
+  `ensure_raw_db`, `recompress_and_remove_raw`, `vector_to_le_bytes`,
+  `populate_one`, `missing_operation_ids` are all pure file/DB logic with
+  no live-SQL-Server dependency; only `targets()`/`main()` (real
+  `argv`/`process::exit`) are left untested.
+- `core/circuit_breaker.rs`: `CircuitBreakerError`'s `Display` impl,
+  `Default`, and the Open -> HalfOpen transition after the reset timeout
+  elapses.
+- `auth/auth_manager.rs`: the credential-resolution cascade's fall-through
+  past seeded credentials that fail `validate_credentials`, the
+  non-Windows SSPI-binding error path, env-var credential lookup.
+  Discovered along the way: three tests attempting to reach
+  `resolve_tds_auth`'s `MissingCredentials` branches for username/
+  password/access_token were fundamentally flawed and had to be removed
+  -- each strategy's own `validate_credentials` already gates on the exact
+  same fields `resolve_tds_auth` later reads, so `AuthManager::
+  credentials()` can never return a map that passes validation but is
+  still missing one of those fields. Those branches are permanently
+  unreachable defensive code, not a real gap.
+- `cli/setup_wizard.rs`: extracted `parse_auth_method_selection`/
+  `parse_transport_selection`/`parse_default_database_answer` as pure
+  functions so the selection-handling logic is testable without mocking
+  `inquire`'s interactive prompts (the installed `inquire` version ships
+  no stdin-injection test utility); `print_mcp_client_config` was already
+  a pure function and just needed a direct test call. While re-reading
+  this file for the refactor, discovered the "windows (NTLM -- ...)"
+  wizard wording from earlier in the original session had been silently
+  lost during the `mcpify sync` recovery (that edit happened after the
+  recovery patch was snapshotted, so reapplying the patch didn't restore
+  it) -- neither compilation nor tests had caught this, since nothing
+  asserted on the wizard's literal prompt text. Restored it as part of
+  this pass.
+- `services/sql_type.rs`: a handful of previously-untested `json_to_param`
+  branches (null bit/decimal, decimal-from-a-JSON-number, a malformed
+  decimal shape, a valid `uniqueidentifier`, the stringify-fallback
+  default for an unrecognized `x-sql-type`).
+- `tests/cli_commands.rs`: new subprocess integration tests for `get` (a
+  real operation + an unknown-operationId error), `call` (unknown-
+  operationId + invalid-input, both reachable before any network
+  attempt), and `search` (a real query against the local store and the
+  cached embedding model, plus the profiling-timing-to-stderr branch).
+
+**Deliberately not pursued**: `cli/setup_wizard.rs`'s actual `inquire`
+prompt call sites (~200 lines) remain untested (no stdin-injection
+utility); `services/api_client.rs::execute`'s live TDS query path,
+`core/mcp_server.rs`, `http/server.rs`'s `start_http_server`, and
+`cli/test_connection.rs` all need either a live SQL Server or a real MCP
+client handshake -- a `#[ignore]`d Docker-gated integration test was
+considered (`docker-compose.yml` already provides real containers) but
+rejected for this specific metric: `scripts/coverage.sh`'s plain `cargo
+llvm-cov` invocation never passes `--include-ignored`, so an ignored test
+wouldn't move this number without also changing what every contributor's
+plain `cargo test`/`cargo llvm-cov` run requires (Docker running), a
+larger project-wide decision out of scope for a coverage-focused pass.
+`core/credential_storage.rs`'s `save_credential`/`load_credential`/
+`delete_credential` (which try the real OS keychain first) and
+`core/logger.rs::init_logging`/`core::shutdown_handler`'s signal-handler
+body (which calls `std::process::exit`) were left alone for the same
+reason the project's own existing tests already avoid them: real global
+process state, not deterministic across environments or safe to touch
+from a test that shares a process with every other test.
