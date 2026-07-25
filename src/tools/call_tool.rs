@@ -47,3 +47,70 @@ pub async fn call_operation(
     }
     Ok(response)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        Config {
+            url: "localhost".to_string(),
+            auth_method: crate::core::config_schema::AuthMethod::SqlServer,
+            sql_port: 1433,
+            pool_max_size: 10,
+            trust_server_cert: true,
+            api_version: "2025".to_string(),
+            log_level: "info".to_string(),
+            rate_limit: 100,
+            timeout_ms: 30_000,
+            cache_size: 500,
+            retry_attempts: 3,
+            transport: crate::core::config_schema::Transport::Stdio,
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+            cors_allow: None,
+            default_database: None,
+        }
+    }
+
+    fn dummy_endpoint(operation_id: &str) -> EndpointRecord {
+        // Never read before `validate_input` returns its `Err` below, so
+        // these placeholder values are never exercised.
+        EndpointRecord {
+            operation_id: operation_id.to_string(),
+            path: "/dbo/sp_MailItemResultSets".to_string(),
+            method: "POST".to_string(),
+            summary: None,
+            description: None,
+            input_schema: serde_json::Value::Null,
+            output_schema: serde_json::Value::Null,
+            auth_scheme_ref: None,
+        }
+    }
+
+    /// `dbo_sp_MailItemResultSets` (a real 2025-catalog operation) requires
+    /// `mailitem_id`/`profile_id`/`conversation_handle`/
+    /// `service_contract_name`/`message_type_name` -- an empty body fails
+    /// schema validation, which `call_operation` checks *before* building
+    /// an `ApiClient` or attempting any TDS connection, so this is
+    /// reachable without live SQL Server infra.
+    #[tokio::test]
+    async fn call_operation_rejects_invalid_input_before_touching_the_network() {
+        let operation_id = "dbo_sp_MailItemResultSets";
+        let endpoint = dummy_endpoint(operation_id);
+        let config = test_config();
+        let mut auth_manager = AuthManager::new(config.auth_method);
+
+        let result = call_operation(
+            &endpoint,
+            &config,
+            &mut auth_manager,
+            operation_id,
+            serde_json::json!({"body": {}}),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid input"));
+    }
+}

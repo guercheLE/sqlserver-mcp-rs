@@ -618,4 +618,47 @@ mod tests {
             serde_json::Value::Null
         );
     }
+
+    #[test]
+    fn json_to_param_accepts_a_null_bit() {
+        assert_eq!(bound_value(serde_json::Value::Null, "bit"), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn json_to_param_accepts_a_null_decimal() {
+        assert_eq!(
+            bound_value(serde_json::Value::Null, "decimal(18,2)"),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn json_to_param_parses_a_decimal_from_a_json_number() {
+        assert_eq!(
+            bound_value(serde_json::json!(3), "decimal(18,0)"),
+            serde_json::json!("3")
+        );
+    }
+
+    #[test]
+    fn json_to_param_rejects_a_malformed_decimal_shape() {
+        assert!(json_to_param(&serde_json::json!(true), "decimal(18,2)").is_err());
+    }
+
+    #[test]
+    fn json_to_param_parses_a_valid_uniqueidentifier() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            bound_value(serde_json::json!(id), "uniqueidentifier"),
+            serde_json::json!(id)
+        );
+    }
+
+    #[test]
+    fn json_to_param_falls_back_to_stringifying_an_unrecognized_sql_type() {
+        assert_eq!(
+            bound_value(serde_json::json!(42), "xml"),
+            serde_json::json!("42")
+        );
+    }
 }

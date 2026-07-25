@@ -12,3 +12,52 @@ pub fn get_operation(conn: &Connection, operation_id: &str) -> anyhow::Result<se
         .ok_or_else(|| McpifyError::NotFound(format!("unknown operationId '{operation_id}'")))?;
     Ok(serde_json::to_value(endpoint)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal `endpoints`-only schema -- `get_operation` never touches
+    /// `semantic_endpoints`, so unlike search_tool's tests this doesn't
+    /// need the sqlite-vec extension registered at all.
+    fn seeded_store() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE endpoints (
+                operation_id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                method TEXT NOT NULL,
+                summary TEXT,
+                description TEXT,
+                input_schema TEXT NOT NULL,
+                output_schema TEXT NOT NULL,
+                auth_scheme_ref TEXT
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO endpoints (operation_id, path, method, summary, description, input_schema, output_schema, auth_scheme_ref)
+             VALUES ('listWidgets', '/widgets', 'GET', 'List widgets', NULL, '{}', '[]', NULL)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn get_operation_returns_the_seeded_endpoint_as_json() {
+        let conn = seeded_store();
+        let result = get_operation(&conn, "listWidgets").unwrap();
+        assert_eq!(result["operation_id"], "listWidgets");
+        assert_eq!(result["path"], "/widgets");
+        assert_eq!(result["summary"], "List widgets");
+    }
+
+    #[test]
+    fn get_operation_errors_on_an_unknown_operation_id() {
+        let conn = seeded_store();
+        let err = get_operation(&conn, "doesNotExist").unwrap_err();
+        assert!(err.to_string().contains("unknown operationId 'doesNotExist'"));
+    }
+}

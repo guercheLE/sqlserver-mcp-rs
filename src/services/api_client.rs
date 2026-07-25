@@ -245,6 +245,25 @@ fn build_statement(
     Ok((sql, bound))
 }
 
+/// The severity-to-status-category mapping documented on every generated
+/// operation's 400/403/500 responses (see `docs/sqlserver-eda-openapi-pipeline
+/// /README.md`'s "OpenAPI mapping convention") -- pulled out of
+/// `classify_tiberius_error` as its own pure function so this classification
+/// logic is unit-testable directly. `tiberius::tds::codec::TokenError`'s
+/// fields are all `pub(crate)` with no public constructor, so a
+/// `tiberius::error::Error::Server(_)` can never be built from outside the
+/// crate for a test to exercise the branch that reads `class` off it --
+/// this function is what actually stays testable.
+fn severity_category(class: u8) -> &'static str {
+    if class >= 17 {
+        "fatal/resource error (500-equivalent)"
+    } else if class == 14 {
+        "permission denied (403-equivalent)"
+    } else {
+        "statement/user error (400-equivalent)"
+    }
+}
+
 /// Maps a `tiberius` error to this project's synthetic 400/403/500 split
 /// (see `docs/sqlserver-eda-openapi-pipeline/README.md`'s "OpenAPI mapping
 /// convention" -- SQL Server severity 11-16 statement errors are `400`,
@@ -266,13 +285,7 @@ fn classify_tiberius_error(err: tiberius::error::Error) -> anyhow::Error {
                 token.procedure(),
                 token.line(),
             );
-            let category = if class >= 17 {
-                "fatal/resource error (500-equivalent)"
-            } else if class == 14 {
-                "permission denied (403-equivalent)"
-            } else {
-                "statement/user error (400-equivalent)"
-            };
+            let category = severity_category(class);
             anyhow::anyhow!(
                 "SQL Server error {number} (severity {class}, state {state}) in '{procedure}' line {line}: {message} [{category}]"
             )
@@ -625,6 +638,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_execution_database_rejects_a_non_string_body_value() {
+        let mut body = Map::new();
+        body.insert(EXECUTION_DATABASE_PARAM.to_string(), Value::from(42));
+        assert!(resolve_execution_database(&body, &test_config()).is_err());
+    }
+
+    #[test]
+    fn resolve_execution_database_rejects_an_unsafe_body_value() {
+        let mut body = Map::new();
+        body.insert(
+            EXECUTION_DATABASE_PARAM.to_string(),
+            Value::String("robert'; drop table endpoints;--".to_string()),
+        );
+        assert!(resolve_execution_database(&body, &test_config()).is_err());
+    }
+
+    #[test]
+    fn resolve_execution_database_rejects_an_unsafe_configured_default() {
+        let mut config = test_config();
+        config.default_database = Some("has space".to_string());
+        assert!(resolve_execution_database(&Map::new(), &config).is_err());
+    }
+
     fn test_config() -> Config {
         Config {
             url: "localhost".to_string(),
@@ -745,6 +782,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn severity_category_maps_11_through_16_to_400_equivalent() {
+        for class in [11, 12, 13, 14 - 1, 15, 16] {
+            assert_eq!(severity_category(class), "statement/user error (400-equivalent)");
+        }
+    }
+
+    #[test]
+    fn severity_category_maps_14_to_403_equivalent() {
+        assert_eq!(severity_category(14), "permission denied (403-equivalent)");
+    }
+
+    #[test]
+    fn severity_category_maps_17_through_25_to_500_equivalent() {
+        for class in [17, 18, 20, 25] {
+            assert_eq!(severity_category(class), "fatal/resource error (500-equivalent)");
+        }
+    }
+
+    #[test]
+    fn severity_category_boundary_at_16_vs_17() {
+        assert_eq!(severity_category(16), "statement/user error (400-equivalent)");
+        assert_eq!(severity_category(17), "fatal/resource error (500-equivalent)");
     }
 
     #[test]

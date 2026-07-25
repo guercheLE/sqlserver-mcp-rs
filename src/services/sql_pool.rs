@@ -45,3 +45,54 @@ pub async fn cached_pool(
     let mut pools = pools.lock().unwrap();
     Ok(pools.entry(cache_key.to_string()).or_insert(pool).clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `tiberius::Config` pointed at a reserved documentation-only
+    /// address (RFC 5737 TEST-NET-1) -- never routable, so nothing this
+    /// test does can ever reach a real server. Safe to use because `bb8`'s
+    /// `Pool::builder()` defaults `min_idle` to `None` (see bb8's own
+    /// `Builder::default`/`PoolInner::start_connections`/`wanted`), so
+    /// `build()` doesn't eagerly establish any connection when the
+    /// builder never calls `.min_idle(..)` -- exactly what `cached_pool`
+    /// does -- meaning `Pool::builder().max_size(n).build(manager).await`
+    /// itself never touches the network here.
+    fn unroutable_config() -> tiberius::Config {
+        let mut config = tiberius::Config::new();
+        config.host("192.0.2.1");
+        config.port(1433);
+        config
+    }
+
+    #[tokio::test]
+    async fn cached_pool_serves_a_cache_hit_on_the_same_key_without_erroring() {
+        // First call: cache miss, builds and inserts a new pool. Second
+        // call, same key: cache hit, clones the cached entry instead of
+        // building again -- exercises both branches of `cached_pool`
+        // without a live SQL Server (`build()` doesn't eagerly connect;
+        // see `unroutable_config`'s doc comment).
+        let key = "cached_pool_serves_a_cache_hit_on_the_same_key_without_erroring";
+        cached_pool(key, unroutable_config(), 5).await.unwrap();
+        cached_pool(key, unroutable_config(), 5).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cached_pool_builds_a_separate_pool_for_a_distinct_key() {
+        cached_pool(
+            "cached_pool_builds_a_separate_pool_for_a_distinct_key_a",
+            unroutable_config(),
+            5,
+        )
+        .await
+        .unwrap();
+        cached_pool(
+            "cached_pool_builds_a_separate_pool_for_a_distinct_key_b",
+            unroutable_config(),
+            5,
+        )
+        .await
+        .unwrap();
+    }
+}

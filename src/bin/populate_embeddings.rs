@@ -235,3 +235,157 @@ fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn zst_sibling_appends_the_zst_suffix() {
+        assert_eq!(
+            zst_sibling(Path::new("mcp_store.db")),
+            PathBuf::from("mcp_store.db.zst")
+        );
+    }
+
+    #[test]
+    fn vector_to_le_bytes_encodes_each_f32_as_four_little_endian_bytes() {
+        let bytes = vector_to_le_bytes(&[1.0f32, -1.0f32]);
+        assert_eq!(bytes.len(), 8);
+        assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &(-1.0f32).to_le_bytes());
+    }
+
+    #[test]
+    fn ensure_raw_db_is_a_no_op_when_the_raw_file_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        std::fs::write(&path, b"already here").unwrap();
+        ensure_raw_db(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"already here");
+    }
+
+    #[test]
+    fn ensure_raw_db_decompresses_the_zst_sibling_when_the_raw_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let zst_path = zst_sibling(&path);
+        let compressed = zstd::stream::encode_all(b"decompressed contents".as_slice(), 3).unwrap();
+        std::fs::write(&zst_path, compressed).unwrap();
+
+        ensure_raw_db(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"decompressed contents");
+    }
+
+    #[test]
+    fn ensure_raw_db_errors_when_neither_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        assert!(ensure_raw_db(&path).is_err());
+    }
+
+    #[test]
+    fn recompress_and_remove_raw_round_trips_and_deletes_the_raw_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        std::fs::write(&path, b"round trip me").unwrap();
+
+        recompress_and_remove_raw(&path).unwrap();
+
+        assert!(!path.exists());
+        let zst_path = zst_sibling(&path);
+        let compressed = std::fs::read(&zst_path).unwrap();
+        let decompressed = zstd::stream::decode_all(compressed.as_slice()).unwrap();
+        assert_eq!(decompressed, b"round trip me");
+    }
+
+    /// Same schema `services::search_tool`'s own tests seed, minus the
+    /// registration comment repetition -- `sqlite3_auto_extension` is
+    /// process-global and idempotent for the same function pointer.
+    fn seeded_store(path: &Path) -> Connection {
+        unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let conn = Connection::open(path).unwrap();
+        conn.execute(
+            "CREATE TABLE endpoints (
+                operation_id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                method TEXT NOT NULL,
+                summary TEXT,
+                description TEXT,
+                input_schema TEXT NOT NULL,
+                output_schema TEXT NOT NULL,
+                auth_scheme_ref TEXT
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE VIRTUAL TABLE semantic_endpoints USING vec0(
+                operation_id TEXT PRIMARY KEY,
+                embedding FLOAT[768]
+            )",
+            [],
+        )
+        .unwrap();
+        for (id, path_val) in [("sp_who", "/sys/sp_who"), ("sp_help", "/sys/sp_help")] {
+            conn.execute(
+                "INSERT INTO endpoints (operation_id, path, method, summary, description, input_schema, output_schema, auth_scheme_ref)
+                 VALUES (?1, ?2, 'POST', 'a summary', NULL, '{}', '[]', NULL)",
+                rusqlite::params![id, path_val],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn populate_one_embeds_every_endpoint_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        drop(seeded_store(&path));
+
+        let count = populate_one(&path).unwrap();
+        assert_eq!(count, 2);
+        assert!(missing_operation_ids(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn populate_one_is_idempotent_on_a_second_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        drop(seeded_store(&path));
+
+        populate_one(&path).unwrap();
+        // sqlite-vec's vec0 tables have no ON CONFLICT support -- a naive
+        // re-run would hit a UNIQUE constraint violation on the second
+        // insert unless populate_one deletes each row's prior embedding
+        // first (see its own doc comment).
+        let count = populate_one(&path).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn missing_operation_ids_reports_endpoints_with_no_matching_embedding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let conn = seeded_store(&path);
+        // Only embed one of the two seeded endpoints, leaving the other
+        // with no semantic_endpoints row at all.
+        let embedding = vector_to_le_bytes(&[0.0f32; 768]);
+        conn.execute(
+            "INSERT INTO semantic_endpoints (operation_id, embedding) VALUES ('sp_who', ?1)",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+        drop(conn);
+
+        let missing = missing_operation_ids(&path).unwrap();
+        assert_eq!(missing, vec!["sp_help".to_string()]);
+    }
+}

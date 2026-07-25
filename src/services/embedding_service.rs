@@ -55,3 +55,30 @@ pub fn embed(text: &str) -> anyhow::Result<Vec<f32>> {
         .pop()
         .ok_or_else(|| anyhow::anyhow!("embedding model returned no output for the given text"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Loads the real all-mpnet-base-v2 model -- already cached locally
+    /// under `.fastembed_cache/` from this project's own
+    /// `populate-embeddings` runs, so this doesn't hit the network.
+    #[test]
+    fn embed_returns_a_normalized_768_dim_vector() {
+        let vector = embed("list active SQL Server connections").unwrap();
+        assert_eq!(vector.len(), 768);
+
+        let norm: f32 = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-3,
+            "expected a unit-normalized vector, got norm {norm}"
+        );
+    }
+
+    #[test]
+    fn embed_of_different_text_produces_different_vectors() {
+        let a = embed("list active SQL Server connections").unwrap();
+        let b = embed("estimate index compression savings").unwrap();
+        assert_ne!(a, b);
+    }
+}

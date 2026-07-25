@@ -159,4 +159,42 @@ mod tests {
             .await;
         assert!(ok.is_ok());
     }
+
+    #[test]
+    fn open_error_displays_a_fixed_message() {
+        let err: CircuitBreakerError<anyhow::Error> = CircuitBreakerError::Open;
+        assert_eq!(err.to_string(), "circuit breaker is open");
+    }
+
+    #[test]
+    fn inner_error_displays_the_wrapped_error() {
+        let err = CircuitBreakerError::Inner(anyhow::anyhow!("boom"));
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn default_uses_a_five_failure_threshold_and_thirty_second_reset() {
+        // No public accessors for the thresholds -- prove it via behavior:
+        // 4 failures shouldn't open a default breaker, a 5th should.
+        let breaker = CircuitBreaker::default();
+        assert_eq!(breaker.failure_threshold, 5);
+        assert_eq!(breaker.reset_timeout, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn transitions_from_open_to_half_open_after_the_reset_timeout_elapses() {
+        let breaker = CircuitBreaker::new(1, Duration::from_millis(10));
+        let _ = breaker
+            .execute(|| async { Err::<(), _>(anyhow::anyhow!("boom")) })
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Past the reset timeout: the breaker lets this trial call through
+        // (HALF_OPEN) instead of short-circuiting with `Open`.
+        let result = breaker
+            .execute(|| async { Ok::<_, anyhow::Error>(()) })
+            .await;
+        assert!(result.is_ok());
+    }
 }

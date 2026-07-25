@@ -43,3 +43,91 @@ pub fn search_operations(
     let results = search_endpoints(conn, &query_embedding, limit)?;
     Ok(serde_json::to_value(results)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Same schema/registration pattern as `data::store`'s own tests
+    /// (`sqlite3_auto_extension` registration is process-global and
+    /// idempotent for the same function pointer, so calling it again here
+    /// alongside that module's tests in the same test binary is harmless) --
+    /// but with a real 768-dim `semantic_endpoints` column, matching
+    /// `services::embedding_service::embed`'s actual output width, since
+    /// `search_operations` calls the real embedding model rather than
+    /// taking a pre-computed vector.
+    fn seeded_store() -> Connection {
+        unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE endpoints (
+                operation_id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                method TEXT NOT NULL,
+                summary TEXT,
+                description TEXT,
+                input_schema TEXT NOT NULL,
+                output_schema TEXT NOT NULL,
+                auth_scheme_ref TEXT
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE VIRTUAL TABLE semantic_endpoints USING vec0(
+                operation_id TEXT PRIMARY KEY,
+                embedding FLOAT[768]
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO endpoints (operation_id, path, method, summary, description, input_schema, output_schema, auth_scheme_ref)
+             VALUES ('listWidgets', '/widgets', 'GET', 'List widgets', NULL, '{}', '[]', NULL)",
+            [],
+        )
+        .unwrap();
+        let embedding: Vec<u8> = std::iter::once(1.0f32)
+            .chain(std::iter::repeat(0.0f32).take(767))
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        conn.execute(
+            "INSERT INTO semantic_endpoints (operation_id, embedding) VALUES ('listWidgets', ?1)",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn search_operations_finds_the_only_seeded_row() {
+        let conn = seeded_store();
+        let result = search_operations(&conn, "list all the widgets", 5).unwrap();
+        let results = result.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["operation_id"], "listWidgets");
+    }
+
+    #[test]
+    fn warn_if_embeddings_incomplete_does_not_panic_on_a_matched_store() {
+        // No `semantic_endpoints` shortfall here (1 endpoint, 1 embedding) --
+        // this just exercises the query-and-compare path without asserting
+        // on log output.
+        let conn = seeded_store();
+        warn_if_embeddings_incomplete(&conn);
+    }
+
+    #[test]
+    fn warn_if_embeddings_incomplete_does_not_panic_on_a_missing_table() {
+        // conn.query_row's `Err` case (schema doesn't even have the
+        // expected tables) -- warn_if_embeddings_incomplete must swallow
+        // this via its `if let Ok(...)`, not propagate/panic.
+        let conn = Connection::open_in_memory().unwrap();
+        warn_if_embeddings_incomplete(&conn);
+    }
+}
