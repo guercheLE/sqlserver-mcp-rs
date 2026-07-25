@@ -23,6 +23,7 @@ target
 *.log
 .env
 .DS_Store
+__pycache__/
 
 # Raw SQLite stores are regenerated from their committed `.db.zst`
 # siblings (see src/data/store.rs's resolve_store_path and
