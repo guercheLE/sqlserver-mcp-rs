@@ -65,13 +65,18 @@ isn't trivially undone on a large or busy table.
 
 ## Step 5 — execute and verify
 
-If and only if confirmed: search for a way to execute an arbitrary T-SQL
-statement (`sp_executesql` is the general escape hatch for this — it accepts
-any batch, including DDL) and run the `CREATE INDEX` statement from Step 4.
-Then verify it exists via an index lookup (don't rely on the call not
-erroring) and report back to the user, including a note that the
-missing-index DMVs won't reflect this fix until the workload that
-triggered the recommendation runs again.
+This catalog has no general "run arbitrary T-SQL" operation — extended
+stored procedures like `sp_executesql` have no queryable parameter metadata
+and aren't part of the generated catalog (see
+docs/sqlserver-eda-openapi-pipeline/README.md's "Known limitations"), so
+there is no MCP tool call that can run the `CREATE INDEX` statement from
+Step 4. Once the user has explicitly confirmed the exact statement, tell
+them this server can recommend and verify the index but can't create it for
+them — they'll need to run the confirmed `CREATE INDEX` statement themselves
+(SSMS/sqlcmd). Offer to verify it afterward: search for an index lookup on
+the table and confirm the new index now exists, and note that the
+missing-index DMVs won't reflect this fix until the workload that triggered
+the recommendation runs again.
 
 ## Composing with other workflows
 

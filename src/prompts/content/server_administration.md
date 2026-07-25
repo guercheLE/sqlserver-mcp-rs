@@ -28,13 +28,17 @@ differ across the four supported engine versions (2017/2019/2022/2025).
   tables/databases match) with the user before calling, especially for
   anything destructive.
 - "How do I connect to another SQL Server instance from this one?" → search
-  for linked-server operations. Only add and list are available as named
-  operations in this catalog — there is no dedicated drop operation.
-  Removing a linked server needs a raw `DROP SERVER` statement executed via
-  `sp_executesql` (search for it — it accepts an arbitrary T-SQL batch, so
-  it's the general escape hatch whenever a named operation doesn't exist).
-  **Confirm the exact statement with the user before executing anything
-  through it** — it isn't limited to reads.
+  for linked-server operations (add/list/drop). **Confirm the exact server
+  name with the user before calling the drop operation** — it isn't limited
+  to reads, and removing a linked server can break anything still using it.
+- This catalog has no general "run arbitrary T-SQL" operation — extended
+  stored procedures like `sp_executesql` have no queryable parameter
+  metadata and aren't part of the generated catalog (see
+  docs/sqlserver-eda-openapi-pipeline/README.md's "Known limitations"). If a
+  `search` for the specific action you need (rename, drop, configure, ...)
+  comes up empty, don't assume there's an escape hatch — tell the user this
+  action isn't available through this MCP server and needs to be run
+  directly (SSMS/sqlcmd).
 
 ## Composing with other workflows
 

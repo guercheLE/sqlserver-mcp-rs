@@ -48,11 +48,16 @@ be undone. Ask directly: "should I terminate session `<id>`?"
 
 ## Step 5 — terminate only after confirmation, then verify
 
-If and only if the user confirms: search for a way to execute an arbitrary
-T-SQL statement (`sp_executesql` is the general escape hatch for this — it
-accepts any batch, including a `KILL` statement) and run `KILL <session_id>`.
-Afterward, repeat Step 1 to confirm the chain actually cleared — don't assume
-success just because the call didn't error.
+This catalog has no general "run arbitrary T-SQL" operation — extended
+stored procedures like `sp_executesql` have no queryable parameter metadata
+and aren't part of the generated catalog (see
+docs/sqlserver-eda-openapi-pipeline/README.md's "Known limitations"), and
+`KILL` has no dedicated wrapper procedure in stock SQL Server either. So
+even after the user confirms, this server cannot terminate the session for
+them through an MCP tool call — tell them that directly, and give them the
+exact statement to run themselves: `KILL <session_id>`. Offer to verify
+afterward: repeat Step 1 once they confirm they've run it, to confirm the
+chain actually cleared.
 
 ## Composing with other workflows
 

@@ -1,10 +1,16 @@
 # SQL Server operational workflows — start here
 
-This server exposes exactly 3 generic tools — `search`, `get`, `call` — over a
-curated SQL Server catalog (system stored procedures, DMVs/DMFs, and catalog
-views). The prompts below sequence those tools into guided, multi-step
-workflows for common operational tasks, so you don't have to re-derive the
-right order of calls, the gotchas, and the verification steps from scratch.
+This server exposes exactly 3 generic tools — `search`, `get`, `call` — over
+a SQL Server catalog (system stored procedures, functions, DMVs/DMFs, and
+catalog views) introspected live from `master`/`msdb`/`model` and ranked to
+the ~500 most useful operations per engine version — see
+docs/sqlserver-eda-openapi-pipeline/README.md's "Known limitations" for what
+that ranking leaves out (notably: extended stored procedures like
+`sp_executesql` have no queryable metadata and aren't in the catalog at all —
+there is no general "run arbitrary T-SQL" escape hatch). The prompts below
+sequence the covered operations into guided, multi-step workflows for common
+operational tasks, so you don't have to re-derive the right order of calls,
+the gotchas, and the verification steps from scratch.
 
 ## Menu
 
