@@ -1,19 +1,45 @@
 /*
  * resultset.sql
  *
- * Attempts to describe the output shape of each matched procedure using
- * sys.dm_exec_describe_first_result_set, and of each matched view/function
- * using sys.columns / sys.dm_exec_describe_first_result_set as applicable.
+ * Best-effort, execution-free result-set introspection for procedures,
+ * functions, and views (types 'P', 'FN', 'IF', 'TF', 'V' -- NOT 'PC'/'FS'/
+ * 'FT'/'X', see below) objects.sql would match, via
+ * sys.dm_exec_describe_first_result_set -- this performs static analysis of
+ * the T-SQL text it's given and, per Microsoft, never executes the
+ * statement, so it's safe to attempt even on mutating procedures
+ * (sp_rename, sp_delete_job, ...).
  *
- * Many objects will fail introspection (extended procs, procs with
- * conditional result sets that need specific arguments, procs that require
- * elevated permissions or special session state). Those are recorded with
- * result_set_status = 'unknown' rather than guessed at -- see README
- * limitations.
+ * CLR objects ('PC'/'FS'/'FT') and extended stored procedures ('X') are
+ * deliberately excluded from this script entirely, not just left to fail
+ * via TRY/CATCH: there is no T-SQL AST for describe_first_result_set to
+ * statically analyze for compiled-DLL/.NET-assembly code, so determining
+ * their result shape this way apparently still touches native/managed
+ * code paths -- confirmed live against a SQL Server 2017 container during
+ * this pipeline's development, where describing one such object raised a
+ * severity-20 fatal exception that tore down the whole sqlcmd session
+ * (severity 20+ errors terminate the connection and bypass TRY/CATCH
+ * entirely -- there is no way to recover from one mid-script). Excluding
+ * these types is the only reliable mitigation; resultset_fmtonly.sql
+ * already excluded 'X' for a related but distinct safety reason (its "no
+ * data altered" guarantee doesn't cover compiled-DLL code either) and now
+ * excludes 'PC'/'FS'/'FT' too for this same crash risk.
+ *
+ * Since most system procs/functions have at least one required parameter,
+ * a bare `EXEC schema.name` often isn't enough for the query processor to
+ * resolve the call -- this builds a call with every declared parameter
+ * explicitly passed as NULL (named `@param = NULL` for procedures, so
+ * argument order never matters; positional for functions, which have no
+ * named-call syntax) so describe_first_result_set has a syntactically
+ * complete statement to analyze. Many objects still won't describe --
+ * extended procs, procs with conditional/dynamic result sets, procs needing
+ * elevated permissions or a specific session state. Those are recorded with
+ * result_set_status = 'unknown' rather than guessed at; tools/
+ * generate_openapi.py then falls back to resultset_fmtonly.sql's output for
+ * those before giving up on columns entirely -- see README limitations.
  *
  * Run the same way as objects.sql, once per database per version:
  *   sqlcmd -S localhost,<port> -U sa -P "$MSSQL_SA_PASSWORD" -C \
- *     -v db=<master|msdb|sandbox> -i sql/eda/resultset.sql -o data/<version>/<db>.resultset.json
+ *     -v db=<master|msdb|model> -i sql/eda/resultset.sql -o data/<version>/<db>.resultset.json
  */
 
 -- See objects.sql for why this is an explicit USE off a required sqlcmd
@@ -27,14 +53,6 @@ USE $(db);
 
 SET NOCOUNT ON;
 
-IF OBJECT_ID('tempdb..#allowlist_names') IS NOT NULL DROP TABLE #allowlist_names;
-CREATE TABLE #allowlist_names (name sysname NOT NULL);
-:r allowlist_names.sql
-
-IF OBJECT_ID('tempdb..#allowlist_patterns') IS NOT NULL DROP TABLE #allowlist_patterns;
-CREATE TABLE #allowlist_patterns (pattern nvarchar(200) NOT NULL);
-:r allowlist_patterns.sql
-
 IF OBJECT_ID('tempdb..#targets') IS NOT NULL DROP TABLE #targets;
 SELECT
     o.object_id,
@@ -43,9 +61,8 @@ SELECT
     o.type                    AS object_type_code
 INTO #targets
 FROM sys.all_objects AS o
-WHERE (EXISTS (SELECT 1 FROM #allowlist_names n WHERE n.name = o.name)
-    OR EXISTS (SELECT 1 FROM #allowlist_patterns p WHERE o.name LIKE p.pattern))
-  AND o.type IN ('P', 'PC', 'V');  -- procedures, CLR procs, views (result-set introspectable via T-SQL EXEC/SELECT)
+WHERE o.is_ms_shipped = 1
+  AND o.type IN ('P', 'FN', 'IF', 'TF', 'V');  -- 'PC'/'FS'/'FT'/'X' deliberately excluded -- see header comment
 
 IF OBJECT_ID('tempdb..#results') IS NOT NULL DROP TABLE #results;
 CREATE TABLE #results (
@@ -60,21 +77,48 @@ CREATE TABLE #results (
     is_nullable       bit NULL
 );
 
-DECLARE @schema sysname, @name sysname, @type nchar(2), @sql nvarchar(max);
+DECLARE @schema sysname, @name sysname, @type nchar(2), @object_id int, @sql nvarchar(max), @args nvarchar(max);
 
 DECLARE target_cursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT schema_name, object_name, object_type_code FROM #targets;
+    SELECT schema_name, object_name, object_type_code, object_id FROM #targets;
 
 OPEN target_cursor;
-FETCH NEXT FROM target_cursor INTO @schema, @name, @type;
+FETCH NEXT FROM target_cursor INTO @schema, @name, @type, @object_id;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
     BEGIN TRY
         IF @type = 'V'
+        BEGIN
             SET @sql = N'SELECT * FROM ' + QUOTENAME(@schema) + N'.' + QUOTENAME(@name);
+        END
+        ELSE IF @type IN ('FN', 'FS')
+        BEGIN
+            -- Scalar functions: positional NULLs (no named-argument call
+            -- syntax exists for a bare function call), wrapped as a single
+            -- aliased column so the "result set" has a stable column name.
+            SELECT @args = STRING_AGG(CAST(N'NULL' AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY parameter_id)
+            FROM sys.all_parameters WHERE object_id = @object_id AND parameter_id > 0;
+            SET @sql = N'SELECT ' + QUOTENAME(@schema) + N'.' + QUOTENAME(@name)
+                     + N'(' + ISNULL(@args, N'') + N') AS result';
+        END
+        ELSE IF @type IN ('IF', 'TF', 'FT')
+        BEGIN
+            -- Table-valued functions: positional NULLs in the FROM-clause call.
+            SELECT @args = STRING_AGG(CAST(N'NULL' AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY parameter_id)
+            FROM sys.all_parameters WHERE object_id = @object_id AND parameter_id > 0;
+            SET @sql = N'SELECT * FROM ' + QUOTENAME(@schema) + N'.' + QUOTENAME(@name)
+                     + N'(' + ISNULL(@args, N'') + N')';
+        END
         ELSE
-            SET @sql = N'EXEC ' + QUOTENAME(@schema) + N'.' + QUOTENAME(@name);
+        BEGIN
+            -- Procedures (P/PC/X): named `@param = NULL` so declared
+            -- parameter order never has to match call order.
+            SELECT @args = STRING_AGG(CAST(N'@' + name + N' = NULL' AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY parameter_id)
+            FROM sys.all_parameters WHERE object_id = @object_id AND parameter_id > 0 AND name IS NOT NULL;
+            SET @sql = N'EXEC ' + QUOTENAME(@schema) + N'.' + QUOTENAME(@name)
+                     + CASE WHEN @args IS NULL THEN N'' ELSE N' ' + @args END;
+        END
 
         INSERT INTO #results (schema_name, object_name, object_type_code, result_set_status,
                                column_ordinal, column_name, system_type_name, is_nullable)
@@ -91,7 +135,7 @@ BEGIN
         VALUES (@schema, @name, @type, 'unknown', ERROR_MESSAGE());
     END CATCH
 
-    FETCH NEXT FROM target_cursor INTO @schema, @name, @type;
+    FETCH NEXT FROM target_cursor INTO @schema, @name, @type, @object_id;
 END
 
 CLOSE target_cursor;

@@ -2,10 +2,10 @@
 # Run version_diff.sql (inside each container, via docker exec) against every
 # currently-healthy container and print pairwise diffs of the matched object
 # list for a given database.
-# Usage: scripts/diff_versions.sh <master|msdb|sandbox>
+# Usage: scripts/diff_versions.sh <master|msdb|model>
 set -euo pipefail
 
-db="${1:?usage: diff_versions.sh <master|msdb|sandbox>}"
+db="${1:?usage: diff_versions.sh <master|msdb|model>}"
 cd "$(dirname "$0")/.."
 : "${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD (e.g. source .env)}"
 

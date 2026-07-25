@@ -1,7 +1,7 @@
 /*
  * version_diff.sql
  *
- * Same allowlist match as objects.sql, but emits one plain-text line per
+ * Same is_ms_shipped sweep as objects.sql, but emits one plain-text line per
  * matched object (schema.name<TAB>type) instead of JSON, specifically so the
  * output from different SQL Server versions can be diffed directly with
  * `diff`/`comm` to see which objects were added/removed/renamed between
@@ -22,16 +22,8 @@ USE $(db);
 
 SET NOCOUNT ON;
 
-IF OBJECT_ID('tempdb..#allowlist_names') IS NOT NULL DROP TABLE #allowlist_names;
-CREATE TABLE #allowlist_names (name sysname NOT NULL);
-:r allowlist_names.sql
-
-IF OBJECT_ID('tempdb..#allowlist_patterns') IS NOT NULL DROP TABLE #allowlist_patterns;
-CREATE TABLE #allowlist_patterns (pattern nvarchar(200) NOT NULL);
-:r allowlist_patterns.sql
-
 SELECT SCHEMA_NAME(o.schema_id) + N'.' + o.name + CHAR(9) + o.type_desc AS line
 FROM sys.all_objects AS o
-WHERE EXISTS (SELECT 1 FROM #allowlist_names n WHERE n.name = o.name)
-   OR EXISTS (SELECT 1 FROM #allowlist_patterns p WHERE o.name LIKE p.pattern)
+WHERE o.is_ms_shipped = 1
+  AND o.type IN ('P', 'PC', 'X', 'FN', 'IF', 'TF', 'FS', 'FT', 'V')
 ORDER BY line;

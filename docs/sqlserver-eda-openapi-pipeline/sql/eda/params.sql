@@ -1,14 +1,20 @@
 /*
  * params.sql
  *
- * Pulls parameter metadata (name, type, direction, default, is_output) for
- * every object matched by objects.sql, from sys.all_parameters (covers both
- * user and system objects; sys.system_parameters is a subset view over the
- * same rows for system objects and is not needed separately).
+ * Parameter metadata (name, type, direction, default) for every object
+ * objects.sql would match (is_ms_shipped = 1, the same operation type set),
+ * from sys.all_parameters (covers both user and system objects;
+ * sys.system_parameters is a subset view over the same rows for system
+ * objects and is not needed separately).
+ *
+ * parameter_id = 0 (the function-return-value pseudo-row functions carry)
+ * is excluded -- it isn't a real input/output parameter, and dropping it
+ * here keeps this script's output symmetric with resultset.sql's/
+ * resultset_fmtonly.sql's dynamic-call construction, which also skips it.
  *
  * Run the same way as objects.sql, once per database per version:
  *   sqlcmd -S localhost,<port> -U sa -P "$MSSQL_SA_PASSWORD" -C \
- *     -v db=<master|msdb|sandbox> -i sql/eda/params.sql -o data/<version>/<db>.params.json
+ *     -v db=<master|msdb|model> -i sql/eda/params.sql -o data/<version>/<db>.params.json
  */
 
 -- See objects.sql for why this is an explicit USE off a required sqlcmd
@@ -17,18 +23,11 @@ USE $(db);
 
 SET NOCOUNT ON;
 
-IF OBJECT_ID('tempdb..#allowlist_names') IS NOT NULL DROP TABLE #allowlist_names;
-CREATE TABLE #allowlist_names (name sysname NOT NULL);
-:r allowlist_names.sql
-
-IF OBJECT_ID('tempdb..#allowlist_patterns') IS NOT NULL DROP TABLE #allowlist_patterns;
-CREATE TABLE #allowlist_patterns (pattern nvarchar(200) NOT NULL);
-:r allowlist_patterns.sql
-
 SELECT
     DB_NAME()                              AS database_name,
     SCHEMA_NAME(o.schema_id)                AS schema_name,
     o.name                                  AS object_name,
+    o.type                                  AS object_type_code,
     o.type_desc                             AS object_type_desc,
     p.name                                  AS parameter_name,
     p.parameter_id                          AS ordinal,
@@ -48,7 +47,8 @@ JOIN sys.all_parameters AS p
     ON p.object_id = o.object_id
 JOIN sys.types AS t
     ON t.user_type_id = p.user_type_id
-WHERE EXISTS (SELECT 1 FROM #allowlist_names n WHERE n.name = o.name)
-   OR EXISTS (SELECT 1 FROM #allowlist_patterns pat WHERE o.name LIKE pat.pattern)
+WHERE o.is_ms_shipped = 1
+  AND o.type IN ('P', 'PC', 'X', 'FN', 'IF', 'TF', 'FS', 'FT', 'V')
+  AND p.parameter_id > 0
 ORDER BY schema_name, object_name, ordinal
 FOR JSON PATH;
