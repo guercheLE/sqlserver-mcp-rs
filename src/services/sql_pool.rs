@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 //
 // A process-wide cache of `bb8` connection pools, one per distinct
 // `tiberius::Config` (in practice: one, since `Config` is loaded once at

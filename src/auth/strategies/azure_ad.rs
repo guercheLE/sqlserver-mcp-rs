@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 //
 // `azureADAuth` (Azure Active Directory / Microsoft Entra ID — see
 // docs/sqlserver-eda-openapi-pipeline/README.md's `securitySchemes`

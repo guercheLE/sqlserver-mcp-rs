@@ -103,7 +103,7 @@ fn search_returns_results_for_a_real_query() {
     let output = run(&["search", "list active SQL Server connections"]);
     assert!(output.status.success());
     let results: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(results.as_array().unwrap().len() > 0);
+    assert!(!results.as_array().unwrap().is_empty());
 }
 
 #[test]

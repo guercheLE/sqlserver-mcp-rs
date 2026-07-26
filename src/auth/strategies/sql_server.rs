@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 //
 // `sqlAuth` (SQL Server Authentication: a SQL login validated by the engine
 // itself — see docs/sqlserver-eda-openapi-pipeline/README.md's

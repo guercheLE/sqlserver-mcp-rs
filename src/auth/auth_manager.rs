@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 
 use crate::core::config_schema::AuthMethod;
 use crate::core::credential_storage::{load_credential, save_credential};

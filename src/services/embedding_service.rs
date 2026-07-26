@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 //
 // Single source of truth for embedding computation. bin/populate_embeddings.rs
 // (indexing time) and tools/search_tool.rs (live query time) both call

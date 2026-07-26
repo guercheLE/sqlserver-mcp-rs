@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 
 use sqlserver_mcp_catalog::auth::auth_manager::AuthManager;
 use sqlserver_mcp_catalog::core::config_manager::load_config;

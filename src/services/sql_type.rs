@@ -1,4 +1,4 @@
-// SQL Server 2025 - master/msdb/sandbox combined catalog MCP server.
+// SQL Server - master/msdb/sandbox combined catalog MCP server.
 //
 // Converts between JSON (what a tool call receives/returns) and the
 // concrete Rust types tiberius's `ToSql`/`FromSql` traits require, keyed by
