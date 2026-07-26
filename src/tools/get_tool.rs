@@ -58,6 +58,9 @@ mod tests {
     fn get_operation_errors_on_an_unknown_operation_id() {
         let conn = seeded_store();
         let err = get_operation(&conn, "doesNotExist").unwrap_err();
-        assert!(err.to_string().contains("unknown operationId 'doesNotExist'"));
+        assert!(
+            err.to_string()
+                .contains("unknown operationId 'doesNotExist'")
+        );
     }
 }

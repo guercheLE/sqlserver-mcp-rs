@@ -128,7 +128,12 @@ fn call_rejects_invalid_input_before_touching_the_network() {
     // has no `body` key at all, which the top-level schema treats as
     // simply absent/optional rather than invalid -- it only starts
     // checking `body`'s own required fields once `body` is present.)
-    let output = run(&["call", "dbo_sp_MailItemResultSets", "--args", "{\"body\":{}}"]);
+    let output = run(&[
+        "call",
+        "dbo_sp_MailItemResultSets",
+        "--args",
+        "{\"body\":{}}",
+    ]);
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("invalid input"));

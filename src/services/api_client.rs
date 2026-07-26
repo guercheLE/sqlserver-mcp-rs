@@ -339,7 +339,10 @@ impl ApiClient {
             anyhow::bail!(
                 "operation '{}' is a {} and cannot run while read_only is enabled; set read_only to false to allow it",
                 endpoint.operation_id,
-                endpoint.description.as_deref().unwrap_or("object of unrecognized type"),
+                endpoint
+                    .description
+                    .as_deref()
+                    .unwrap_or("object of unrecognized type"),
             );
         }
 
@@ -442,7 +445,10 @@ mod tests {
         assert!(is_writable_kind(Some("SQL_STORED_PROCEDURE")));
         assert!(is_writable_kind(Some("EXTENDED_STORED_PROCEDURE")));
         assert!(is_writable_kind(Some("CLR_STORED_PROCEDURE")));
-        assert!(is_writable_kind(None), "an unrecognized kind must fail closed");
+        assert!(
+            is_writable_kind(None),
+            "an unrecognized kind must fail closed"
+        );
     }
 
     #[test]
@@ -833,7 +839,10 @@ mod tests {
     #[test]
     fn severity_category_maps_11_through_16_to_400_equivalent() {
         for class in [11, 12, 13, 14 - 1, 15, 16] {
-            assert_eq!(severity_category(class), "statement/user error (400-equivalent)");
+            assert_eq!(
+                severity_category(class),
+                "statement/user error (400-equivalent)"
+            );
         }
     }
 
@@ -845,14 +854,23 @@ mod tests {
     #[test]
     fn severity_category_maps_17_through_25_to_500_equivalent() {
         for class in [17, 18, 20, 25] {
-            assert_eq!(severity_category(class), "fatal/resource error (500-equivalent)");
+            assert_eq!(
+                severity_category(class),
+                "fatal/resource error (500-equivalent)"
+            );
         }
     }
 
     #[test]
     fn severity_category_boundary_at_16_vs_17() {
-        assert_eq!(severity_category(16), "statement/user error (400-equivalent)");
-        assert_eq!(severity_category(17), "fatal/resource error (500-equivalent)");
+        assert_eq!(
+            severity_category(16),
+            "statement/user error (400-equivalent)"
+        );
+        assert_eq!(
+            severity_category(17),
+            "fatal/resource error (500-equivalent)"
+        );
     }
 
     #[test]

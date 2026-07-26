@@ -621,7 +621,10 @@ mod tests {
 
     #[test]
     fn json_to_param_accepts_a_null_bit() {
-        assert_eq!(bound_value(serde_json::Value::Null, "bit"), serde_json::Value::Null);
+        assert_eq!(
+            bound_value(serde_json::Value::Null, "bit"),
+            serde_json::Value::Null
+        );
     }
 
     #[test]
