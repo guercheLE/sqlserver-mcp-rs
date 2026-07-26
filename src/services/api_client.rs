@@ -181,6 +181,26 @@ fn ordered_params(input_schema: &Value) -> Vec<Param> {
 /// exist identically in more than one of master/msdb/model (see
 /// `docs/sqlserver-eda-openapi-pipeline/README.md`'s "OpenAPI mapping
 /// convention"), so which one to actually hit is always resolved per call.
+/// Whether `kind` (an operation's catalog `sys.objects.type_desc`) can
+/// perform a write, mirroring `build_statement`'s own classification.
+/// `VIEW` and any `*_FUNCTION` kind cannot: a view is only ever queried
+/// with a bare `SELECT`, and T-SQL functions are language-level prohibited
+/// from having side effects (SQL Server rejects a `CREATE FUNCTION` body
+/// containing `INSERT`/`UPDATE`/`DELETE` outside a table variable), so
+/// both are genuinely engine-guaranteed read-only, not just app-level
+/// convention. Everything else -- `SQL_STORED_PROCEDURE`,
+/// `EXTENDED_STORED_PROCEDURE`, or a missing/unrecognized classification
+/// (an older store built before `description` carried this classification)
+/// -- has no such guarantee and is treated as write-capable, failing
+/// closed rather than assuming an unknown kind is safe.
+fn is_writable_kind(kind: Option<&str>) -> bool {
+    match kind {
+        Some("VIEW") => false,
+        Some(k) if k.ends_with("_FUNCTION") || k.contains("TABLE_VALUED_FUNCTION") => false,
+        _ => true,
+    }
+}
+
 fn build_statement(
     schema: &str,
     name: &str,
@@ -315,6 +335,14 @@ impl ApiClient {
         args: &Value,
         auth_manager: &mut AuthManager,
     ) -> anyhow::Result<Value> {
+        if self.config.read_only && is_writable_kind(endpoint.description.as_deref()) {
+            anyhow::bail!(
+                "operation '{}' is a {} and cannot run while read_only is enabled; set read_only to false to allow it",
+                endpoint.operation_id,
+                endpoint.description.as_deref().unwrap_or("object of unrecognized type"),
+            );
+        }
+
         let (schema, name) = parse_path(&endpoint.path)?;
 
         let (input_schema, _output_schema) =
@@ -399,6 +427,23 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_writable_kind_treats_views_and_functions_as_read_only() {
+        assert!(!is_writable_kind(Some("VIEW")));
+        assert!(!is_writable_kind(Some("SQL_SCALAR_FUNCTION")));
+        assert!(!is_writable_kind(Some("SQL_INLINE_TABLE_VALUED_FUNCTION")));
+        assert!(!is_writable_kind(Some("SQL_TABLE_VALUED_FUNCTION")));
+        assert!(!is_writable_kind(Some("CLR_TABLE_VALUED_FUNCTION")));
+    }
+
+    #[test]
+    fn is_writable_kind_treats_procedures_and_unknown_kinds_as_writable() {
+        assert!(is_writable_kind(Some("SQL_STORED_PROCEDURE")));
+        assert!(is_writable_kind(Some("EXTENDED_STORED_PROCEDURE")));
+        assert!(is_writable_kind(Some("CLR_STORED_PROCEDURE")));
+        assert!(is_writable_kind(None), "an unrecognized kind must fail closed");
+    }
 
     #[test]
     fn parse_path_splits_schema_name() {
@@ -680,6 +725,7 @@ mod tests {
             port: 3000,
             cors_allow: None,
             default_database: None,
+            read_only: true,
         }
     }
 

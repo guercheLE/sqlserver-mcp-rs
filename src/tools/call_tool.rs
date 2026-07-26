@@ -70,6 +70,7 @@ mod tests {
             port: 3000,
             cors_allow: None,
             default_database: None,
+            read_only: true,
         }
     }
 

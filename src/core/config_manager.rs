@@ -53,9 +53,24 @@ fn env_overrides() -> Map<String, Value> {
         // this env-var mapping from, since it's server configuration, not
         // an OpenAPI request parameter.
         ("default_database", "DEFAULT_DATABASE"),
+        ("read_only", "READ_ONLY"),
     ] {
         if let Ok(value) = std::env::var(format!("{ENV_PREFIX}_{env_suffix}")) {
-            overrides.insert(config_key.to_string(), Value::String(value));
+            // `read_only` deserializes into a `bool` field, unlike every
+            // other env-sourced value here, which lands in a `String`
+            // field -- inserting the raw string would fail deserialization
+            // (`invalid type: string "false", expected a boolean`) instead
+            // of applying the override, silently defeating the one env var
+            // most likely to be set in production for exactly this field.
+            let parsed = if config_key == "read_only" {
+                value
+                    .parse::<bool>()
+                    .map(Value::Bool)
+                    .unwrap_or(Value::String(value))
+            } else {
+                Value::String(value)
+            };
+            overrides.insert(config_key.to_string(), parsed);
         }
     }
     overrides
@@ -112,6 +127,15 @@ mod tests {
         assert_eq!(config.log_level, "info");
         assert_eq!(config.rate_limit, 100);
         assert_eq!(config.port, 3000);
+        assert!(config.read_only, "read_only must default to true");
+    }
+
+    #[test]
+    fn read_only_can_be_disabled_via_cli_flags() {
+        let mut flags = base_flags();
+        flags.insert("read_only".to_string(), json!(false));
+        let config = load_config(flags).unwrap();
+        assert!(!config.read_only);
     }
 
     #[test]

@@ -74,6 +74,7 @@ Interactively collects the SQL Server host and the credentials your chosen auth 
 | `SQLSERVER_TRUST_SERVER_CERT` | Trust the server's TLS cert without CA verification (default `true` — a local/dev instance's self-signed cert; set `false` for a production CA-signed cert). |
 | `SQLSERVER_POOL_MAX_SIZE` | Max pooled SQL Server connections (default `10`). |
 | `SQLSERVER_LOG_LEVEL` | Log verbosity (`trace`/`debug`/`info`/`warn`/`error`). |
+| `SQLSERVER_READ_ONLY` | Defaults to `true`. T-SQL has no session-level "read only" setting the way PostgreSQL does, so this is enforced by object classification instead: `call` refuses any operation whose catalog type isn't `VIEW` or a `*_FUNCTION` kind — SQL Server itself guarantees both can't write (a view is only ever a `SELECT`, and functions are language-level prohibited from having side effects), independent of what the connecting login's actual grants allow. Stored procedures, and any operation whose classification is missing/unrecognized, are rejected outright rather than assumed safe. Set to `false` to allow `call` to invoke stored procedures. |
 
 See `.env.example` for the full list of supported variables.
 

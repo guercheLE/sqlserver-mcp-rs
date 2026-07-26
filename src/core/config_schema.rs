@@ -60,6 +60,9 @@ fn default_pool_max_size() -> u32 {
 fn default_trust_server_cert() -> bool {
     true
 }
+fn default_read_only() -> bool {
+    true
+}
 
 // mcpify:versions:begin
 fn default_api_version() -> String {
@@ -129,6 +132,23 @@ pub struct Config {
     /// convenience default, never required.
     #[serde(default)]
     pub default_database: Option<String>,
+    /// Safeguard independent of the connecting login's actual SQL Server
+    /// grants. T-SQL has no session-level "read only" GUC the way
+    /// PostgreSQL's `default_transaction_read_only` does, so this is
+    /// enforced by object classification instead: when true (the default),
+    /// `call` refuses any operation whose catalog `type_desc` isn't `VIEW`
+    /// or a `*_FUNCTION` kind (see `services::api_client::build_statement`)
+    /// — a `SELECT` against a view can't write, and T-SQL functions are
+    /// language-level prohibited from having side effects, so both are
+    /// genuinely engine-guaranteed read-only, not just app-level sniffing.
+    /// Stored procedures (`SQL_STORED_PROCEDURE`/`EXTENDED_STORED_PROCEDURE`)
+    /// have no such guarantee — SQL Server places no restriction on what a
+    /// procedure body can do — so those are rejected outright, along with
+    /// any object whose classification is missing/unrecognized (fail
+    /// closed rather than assume it's safe). Set to `false` to allow `call`
+    /// to invoke stored procedures.
+    #[serde(default = "default_read_only")]
+    pub read_only: bool,
 }
 
 impl Config {
