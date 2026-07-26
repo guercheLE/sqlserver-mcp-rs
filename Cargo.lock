@@ -4501,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "sqlserver-mcp"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "aes-gcm",
  "anyhow",
